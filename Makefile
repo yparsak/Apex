@@ -29,13 +29,7 @@ db-drop:
 	$(MYSQL) -e "DROP DATABASE IF EXISTS $(DB_NAME);"
 
 install:
-	npm init -y
-	npm install dotenv
-	npm install express
-	npm install express-session
-	npm install bcryptjs
-	npm install mysql2
-	npm install jsonwebtoken
+	npm install
 
 dev:
 	npm run dev

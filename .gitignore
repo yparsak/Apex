@@ -1,4 +1,1 @@
-*node_modules*
-*package-lock*
-*package.json*
-
+node_modules/
