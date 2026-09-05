@@ -1,0 +1,14 @@
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=apex
+DB_USER=
+DB_PASSWORD=
+
+SESSION_SECRET=
+AUTH_PROVIDER=local
+
+MODEL_PROVIDER=nvidia-nim
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+MODEL=meta/llama-3.1-70b-instruct
+NVIDIA_API_KEY=change_me
+
