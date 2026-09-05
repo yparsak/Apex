@@ -1,0 +1,32 @@
+1. Create the App under your personal account
+Go to https://github.com/settings/apps (note: personal Developer settings, not an org settings page) → New GitHub App.
+Same config as before:
+GitHub App name — must be globally unique (e.g. apex-devbranch-bot-<yourusername>-test).
+Homepage URL — any placeholder URL.
+Webhook — uncheck "Active".
+Repository permissions → Contents: Read and write only.
+Where can this GitHub App be installed? → "Only on this account" (this now means your personal account, not an org).
+Create GitHub App.
+2. Get GITHUB_APP_ID
+
+Same as before — shown at the top of the App's settings page right after creation.
+
+3. Generate the private key
+
+Same as before — Private keys → Generate a private key, downloads a .pem. Point GITHUB_APP_PRIVATE_KEY_PATH at it.
+
+4. Install it on one of your own repos
+Left sidebar → Install App.
+You'll see your own personal account as the install target (no org picker, since it's a user-owned App). Choose Only select repositories and pick one or two of your own test repos — ideally a throwaway repo, since the point is just to exercise the token-minting flow.
+Install.
+5. Get GITHUB_APP_INSTALLATION_ID
+
+After installing, the URL is https://github.com/settings/installations/<INSTALLATION_ID> (personal-account version of the URL, no /organizations/... segment). Copy the trailing number.
+
+6. Test
+
+Same as before:
+
+make test-github-token
+
+Caveat worth keeping in mind: a token minted this way only has access to the personal repo(s) you installed it on — it can't touch Cook Medical org repos. This setup is purely for validating that the token-minting mechanism works end-to-end. When you're ready to point this at real Cook Medical repos, whoever owns the org's GitHub settings will need to do the equivalent org-level create+install — that's a one-time GitHub-side step on their end, not a code change on yours.
