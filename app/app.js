@@ -2,12 +2,21 @@
 // before this module is required, since session config reads SESSION_SECRET
 // at require-time.
 
+const path = require('path');
 const express = require('express');
 const session = require('express-session');
 const authRoutes = require('./routes/auth');
+const repoRoutes = require('./routes/repos');
+const pageRoutes = require('./routes/pages');
 const logger = require('./lib/logger');
 
 const app = express();
+
+// Server-rendered pages (Phase 2) - EJS views under app/views, static JS/CSS
+// under app/public served at the root path (e.g. app/public/js/x.js -> /js/x.js).
+app.set('views', path.join(__dirname, 'views'));
+app.set('view engine', 'ejs');
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(express.json());
 
@@ -30,6 +39,8 @@ app.use(
 );
 
 app.use('/auth', authRoutes);
+app.use('/api/repos', repoRoutes);
+app.use('/', pageRoutes);
 
 app.get('/health', (req, res) => {
   res.json({ success: true, message: 'ok', data: {} });

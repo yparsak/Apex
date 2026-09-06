@@ -1,0 +1,9 @@
+/* Minimal styling on top of Bootstrap defaults for Phase 2's views. */
+
+body {
+  padding-bottom: 3rem;
+}
+
+.navbar-brand {
+  font-weight: 600;
+}

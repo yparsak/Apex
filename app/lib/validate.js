@@ -9,4 +9,12 @@ function isNonEmptyString(value, { maxLength } = {}) {
   return true;
 }
 
-module.exports = { isNonEmptyString };
+// Change Order number format, per roadmap.md: format-only validation, not
+// checked against the actual change-control/QMS system (Accepted Risk #1).
+const CO_NUMBER_PATTERN = /^C[0-9]{8}$/;
+
+function isValidCoNumber(value) {
+  return typeof value === 'string' && CO_NUMBER_PATTERN.test(value);
+}
+
+module.exports = { isNonEmptyString, isValidCoNumber, CO_NUMBER_PATTERN };

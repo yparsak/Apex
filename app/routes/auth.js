@@ -5,6 +5,7 @@
 const express = require('express');
 const { getAuthProvider } = require('../lib/auth');
 const { isNonEmptyString } = require('../lib/validate');
+const { sendSuccess, sendFailure } = require('../lib/respond');
 const logger = require('../lib/logger');
 
 const router = express.Router();
@@ -12,14 +13,6 @@ const router = express.Router();
 const USERNAME_MAX_LENGTH = 100;
 const INITIALS_MAX_LENGTH = 10;
 const PASSWORD_MIN_LENGTH = 8;
-
-function sendSuccess(res, data, message = '') {
-  return res.json({ success: true, message, data });
-}
-
-function sendFailure(res, status, message, error = {}) {
-  return res.status(status).json({ success: false, message, error });
-}
 
 // All fields required — no admin-provisioning flow exists yet (Phase 6), and
 // `users.initials` is NOT NULL with no default, so registration must collect it.

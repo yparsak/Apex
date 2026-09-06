@@ -109,3 +109,22 @@ CREATE TABLE IF NOT EXISTS audit_log (
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (repo_id) REFERENCES repos(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Phase 2: serializes the full pipeline (clone -> sandbox build/test -> push)
+-- one session at a time per (repo_id, co_number) - see roadmap.md's "Lock
+-- scope: entire pipeline" decision. A row's existence IS the lock: acquiring
+-- is an INSERT that relies on the UNIQUE constraint below to fail when
+-- another session already holds it; releasing is a DELETE. Phase 2 only
+-- wires acquire-at-CO-resolution and release-on-failure, since the sandbox/
+-- execution phases (3-5) don't exist yet - releasing on a *successful*
+-- full-pipeline completion is Phase 5's job, not this table's.
+CREATE TABLE IF NOT EXISTS pipeline_locks (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  repo_id INT UNSIGNED NOT NULL,
+  co_number VARCHAR(20) NOT NULL,
+  locked_by_user_id INT UNSIGNED NOT NULL,
+  locked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (repo_id) REFERENCES repos(id),
+  FOREIGN KEY (locked_by_user_id) REFERENCES users(id),
+  UNIQUE (repo_id, co_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
