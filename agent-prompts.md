@@ -5,10 +5,9 @@ model adapter and a GitHub App token-minting service — plus the secrets
 abstraction the token service is built on. This doc describes what exists
 today. See `roadmap.md` for the phase-by-phase plan.
 
-Later phases (3: clarification loop, 4: sandboxed execution) will extend
-this doc with actual system-prompt / conversation-strategy content once
-that logic exists — there is none yet, and this doc does not speculate
-about it.
+Phase 3 (below) is the first phase with actual system-prompt / conversation-
+strategy content. Phase 4 (sandboxed execution) still has none — this doc
+does not speculate about it.
 
 ## Model adapter contract
 
@@ -112,3 +111,91 @@ secret named `NAME`: checks `NAME_PATH` first and, if set, reads and
 returns that file's contents (how a multi-line PEM gets supplied in local
 dev); otherwise falls back to reading `NAME` directly as the env var
 value; throws if neither is set.
+
+## Phase 3: clarification loop
+
+Phase 3 is the first thing built on top of the model adapter's plain
+`chat({messages}) => {content}` contract above. The adapter still does not
+speak tool-calling — nothing was added to `modelAdapter.js` or
+`nvidiaNimAdapter.js` for this. Everything below is prompting plus
+deterministic parsing on top of that one call, living in
+`app/lib/branches/` (`clarificationPrompts.js`, `responseParsing.js`,
+`sessionService.js`), not in the adapter layer itself.
+
+### Why no tool-calling
+
+The roadmap scopes the model backend to "NIM for prototyping, swappable
+later" and the adapter contract note above already says full tool-calling
+is "Phase 3+ territory." Building Phase 3 without extending the adapter
+keeps that promise literally: a future adapter swap only ever has to
+implement `chat()`, never a tool-calling schema, because Phase 3 doesn't
+depend on one. The cost is that any structured output has to be recovered
+from free text, which is what the next two sections describe.
+
+### Response-parsing convention
+
+Every model reply is either:
+
+1. **Plain prose** — a clarifying question or commentary. This is the
+   default reply shape and just continues the conversation.
+2. **A single fenced code block**, and nothing else, labeled with a fixed
+   tag, containing JSON:
+   - `` ```requirements-ready `` — a JSON array of one or more non-empty
+     requirement strings. Emitted by the model when it judges it has
+     enough information to stop asking questions.
+   - `` ```overlap-check `` — a JSON array with one
+     `{requirementIndex, duplicate, duplicateOfRequirementId, reason}`
+     object per candidate requirement, covering every index exactly once.
+     Emitted only for the system-triggered overlap check described below,
+     never shown to the user as a reply.
+
+Parsing (`app/lib/branches/responseParsing.js`) is deterministic and
+fails safe by construction: a missing block, invalid JSON, wrong shape, a
+non-string/empty requirement, a missing or duplicated `requirementIndex`,
+or a `duplicateOfRequirementId` that doesn't correspond to a requirement
+actually offered to the model, all produce `null` — never a partial or
+best-guess result. Callers decide what `null` means for their case:
+
+- `requirements-ready` parse failure → the whole reply is treated as an
+  ordinary clarifying question. The loop just continues; nothing is
+  finalized on an ambiguous reply.
+- `overlap-check` parse failure → **fail closed**, per roadmap.md's
+  Accepted Risk #8: every candidate requirement in that batch defaults to
+  `pending_confirm` rather than being silently let through. The whole
+  point of overlap detection is that a human makes the final call when the
+  model's judgment is least reliable — an unparseable judgment is the
+  least reliable case there is, so it gets the most conservative outcome,
+  not the most permissive one.
+
+The prompts that instruct the model to follow this convention live in
+`app/lib/branches/clarificationPrompts.js`, kept separate from the parsing
+and the DB/session orchestration so prompt wording can change without
+touching either.
+
+### Audit-log semantics
+
+`audit_log` is append-only — every model call in `sessionService.js` goes
+through one internal helper (`runChatTurn`) that writes exactly one new
+`audit_log` row per call and never updates an existing one:
+
+- `raw_instructions` — the user's message text for a real Q&A turn, or
+  `null` for a system-triggered call that has no user-authored instruction
+  behind it (the start/resume summary, the overlap check).
+- `qa_history` — the model's raw reply text, verbatim, including the
+  fenced block if present, so a later parsing dispute can be re-audited
+  against exactly what the model said.
+- `user_id` / `repo_id` / `co_number` — the session's owning user and the
+  branch's repo/CO, on every row, regardless of who or what triggered it.
+
+Every audit-logged call also writes to `conversations`, which is the
+visible/replayable transcript rather than the raw audit trail:
+`role: 'user'` / `'assistant'` for anything the user should see (Q&A
+turns, and the start/resume summary, which is stored as `'assistant'`
+so it appears as the first transcript message), or `role: 'system'` for
+the overlap check specifically — recorded for audit purposes but excluded
+from the transcript the UI renders and from the prior-turn history replayed
+into subsequent Q&A calls, since it's an internal check, not part of the
+back-and-forth with the user.
+
+See `roadmap.md`'s "Phase 3 — Clarification loop" section for the feature
+scope this implements, and `Phase3_test.md` for how to exercise it.

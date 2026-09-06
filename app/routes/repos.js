@@ -10,6 +10,7 @@ const { isValidCoNumber } = require('../lib/validate');
 const repoAccess = require('../lib/repos/repoAccess');
 const { refreshActiveBranches } = require('../lib/branches/branchListService');
 const { resolveChangeOrder } = require('../lib/branches/coResolutionService');
+const sessionsRouter = require('./sessions');
 const logger = require('../lib/logger');
 
 const router = express.Router();
@@ -98,5 +99,11 @@ router.post('/:repoId/resolve', async (req, res) => {
     return sendFailure(res, 500, 'Failed to resolve change order', { code: 'INTERNAL_ERROR' });
   }
 });
+
+// Phase 3's clarification-loop routes, nested under a resolved branch. Split
+// into their own router file (see app/routes/sessions.js) since the surface
+// is a few endpoints deep already; mounted here, after router.use(requireAuth)
+// above, so it inherits the same auth guard without re-declaring it.
+router.use('/:repoId/branches/:branchId/sessions', sessionsRouter);
 
 module.exports = router;

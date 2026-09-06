@@ -58,13 +58,22 @@ document.addEventListener('DOMContentLoaded', () => {
             ? `<span class="badge bg-primary">You (${escapeHtml(b.initials)})</span>`
             : `<span class="badge bg-secondary">${escapeHtml(b.initials)}</span>`;
           const created = new Date(b.createdAt).toLocaleString();
+          // A non-null mySessionStatus means this user already resolved onto
+          // this branch before (Phase 3 has written a sessions row) - send
+          // them straight to the session page rather than back through
+          // resolveCo(), since the CO's pipeline lock stays held after the
+          // first successful resolve (Phase 2 only releases it on failure)
+          // and a second resolve call for the same CO would just 409.
+          const actionCell = b.mySessionStatus
+            ? `<a href="/repos/${repoId}/branches/${b.id}/session" class="btn btn-sm btn-outline-primary">Open session</a>`
+            : `<button type="button" class="btn btn-sm btn-outline-primary continue-btn" data-branch-id="${b.id}">Continue</button>`;
           return `<tr>
             <td><code>${escapeHtml(b.branchName)}</code></td>
             <td>${escapeHtml(b.coNumber)}</td>
             <td>${ownerLabel}</td>
             <td>${sessionBadge(b.mySessionStatus)}</td>
             <td>${escapeHtml(created)}</td>
-            <td><button type="button" class="btn btn-sm btn-outline-primary continue-btn" data-branch-id="${b.id}">Continue</button></td>
+            <td>${actionCell}</td>
           </tr>`;
         })
         .join('');
@@ -108,7 +117,9 @@ document.addEventListener('DOMContentLoaded', () => {
         action,
         branchId,
       });
-      resultBox.textContent = `Resolved: ${data.branch.branchName} (CO ${data.changeOrder.coNumber})`;
+      resultBox.innerHTML =
+        `Resolved: ${escapeHtml(data.branch.branchName)} (CO ${escapeHtml(data.changeOrder.coNumber)}) &mdash; ` +
+        `<a href="/repos/${repoId}/branches/${data.branch.id}/session" class="alert-link">Open session &rarr;</a>`;
       resultBox.classList.remove('d-none');
       await loadBranches(currentCo);
     } catch (err) {

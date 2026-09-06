@@ -39,4 +39,13 @@ router.get('/repos/:repoId/branches', requirePageAuth, (req, res) => {
   return res.render('branches', { user: req.session.user, repoId });
 });
 
+router.get('/repos/:repoId/branches/:branchId/session', requirePageAuth, (req, res) => {
+  const repoId = Number(req.params.repoId);
+  const branchId = Number(req.params.branchId);
+  if (!Number.isInteger(repoId) || repoId <= 0 || !Number.isInteger(branchId) || branchId <= 0) {
+    return res.redirect('/repos');
+  }
+  return res.render('session', { user: req.session.user, repoId, branchId });
+});
+
 module.exports = router;

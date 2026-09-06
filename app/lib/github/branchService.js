@@ -87,4 +87,8 @@ async function createBranchFrom({ owner, repoName, newBranch, fromBranch, token 
   logger.info('created GitHub branch', { owner, repoName, newBranch, fromBranch });
 }
 
-module.exports = { branchExists, createBranchFrom, mintRepoToken };
+// githubRequest is also exported for sibling GitHub-API modules (e.g.
+// app/lib/github/diffService.js, Phase 3) that need the same
+// auth/header-construction wrapper but call a different endpoint - keeps
+// that boilerplate in one place rather than re-implementing it per module.
+module.exports = { branchExists, createBranchFrom, mintRepoToken, githubRequest };

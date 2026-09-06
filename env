@@ -14,10 +14,15 @@ SEED_ADMIN_USERNAME=admin
 SEED_ADMIN_PASSWORD=
 SEED_ADMIN_INITIALS=AA
 
+# GitHub App identity. Private key is fetched through SecretsProvider — this
+# is the fallback env-backed value for local/dev use only.
 GITHUB_APP_ID=
+GITHUB_APP_INSTALLATION_ID=
 GITHUB_APP_PRIVATE_KEY_PATH=
 
 MODEL_PROVIDER=nvidia-nim
 NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 MODEL=meta/llama-3.1-70b-instruct
 NVIDIA_API_KEY=
+
+
