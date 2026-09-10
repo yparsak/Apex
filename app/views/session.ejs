@@ -41,6 +41,18 @@
           <div class="card-header">Resolved requirements for this session</div>
           <ul id="finalized-requirements" class="list-group list-group-flush"></ul>
         </div>
+
+        <div id="pipeline-panel" class="card mb-3 d-none">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span>Pipeline</span>
+            <span id="pipeline-status-badge" class="badge bg-secondary">unknown</span>
+          </div>
+          <div class="card-body">
+            <div id="pipeline-error" class="alert alert-danger d-none"></div>
+            <a id="pipeline-commit-link" href="#" target="_blank" rel="noopener" class="d-none d-block mb-2 alert-link"></a>
+            <pre id="pipeline-log" class="bg-dark text-light p-2 rounded mb-0" style="max-height: 40vh; overflow-y: auto; white-space: pre-wrap; font-size: 0.85rem;">(no log yet)</pre>
+          </div>
+        </div>
       </div>
 
       <div class="col-lg-4">

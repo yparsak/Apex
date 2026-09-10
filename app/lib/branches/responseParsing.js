@@ -12,15 +12,13 @@
 // question" for requirements-ready, or "fail closed to pending_confirm" for
 // overlap-check - see app/lib/branches/sessionService.js. This module never
 // makes that judgment call itself.
+//
+// The fenced-block extraction itself lives in app/lib/parsing/fencedBlock.js,
+// shared with Phase 4's app/lib/pipeline/pipelineResponseParsing.js, which
+// follows the exact same convention for its own tags.
 
 const { REQUIREMENTS_READY_TAG, OVERLAP_CHECK_TAG } = require('./clarificationPrompts');
-
-function extractFencedBlock(replyText, tag) {
-  if (typeof replyText !== 'string') return null;
-  const pattern = new RegExp('```' + tag + '\\s*\\n([\\s\\S]*?)\\n?```', 'i');
-  const match = replyText.match(pattern);
-  return match ? match[1].trim() : null;
-}
+const { extractFencedBlock } = require('../parsing/fencedBlock');
 
 function parseRequirementsReady(replyText) {
   const block = extractFencedBlock(replyText, REQUIREMENTS_READY_TAG);

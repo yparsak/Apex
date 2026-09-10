@@ -13,6 +13,15 @@
 // pushes matching `dev/**` to this App's installation. That's a one-time,
 // org-admin GitHub configuration step — there is no code-side mechanism to
 // add here, so don't go looking for one.
+//
+// Permission scoping (Phase 4): the installation-token endpoint also accepts
+// an optional `permissions` object to request a subset of the App's granted
+// permissions. The App itself is `contents: write` only; Phase 4 uses this
+// to mint a token scoped down to `contents: read` for its host-side "clone"
+// step (see app/lib/github/branchService.js's mintCloneOnlyToken), so the
+// write-capable token literally never exists for a step that only needs to
+// read. When `permissions` is omitted, the token carries the installation's
+// full granted permission set, same as before this parameter existed.
 
 const jwt = require('jsonwebtoken');
 const { getSecretsProvider } = require('../secrets');
@@ -21,7 +30,7 @@ const logger = require('../logger');
 const JWT_CLOCK_DRIFT_TOLERANCE_SECONDS = 60;
 const JWT_MAX_LIFETIME_SECONDS = 600; // GitHub's hard cap on App JWTs.
 
-async function mintInstallationToken({ repositories } = {}) {
+async function mintInstallationToken({ repositories, permissions } = {}) {
   const appId = process.env.GITHUB_APP_ID;
   const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
   if (!appId || !installationId) {
@@ -41,7 +50,10 @@ async function mintInstallationToken({ repositories } = {}) {
     { algorithm: 'RS256' }
   );
 
-  const body = repositories ? { repositories } : undefined;
+  const bodyFields = {};
+  if (repositories) bodyFields.repositories = repositories;
+  if (permissions) bodyFields.permissions = permissions;
+  const body = Object.keys(bodyFields).length > 0 ? bodyFields : undefined;
 
   const response = await fetch(
     `https://api.github.com/app/installations/${installationId}/access_tokens`,

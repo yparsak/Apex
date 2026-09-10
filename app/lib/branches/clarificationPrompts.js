@@ -144,4 +144,9 @@ module.exports = {
   buildOverlapCheckMessages,
   REQUIREMENTS_READY_TAG,
   OVERLAP_CHECK_TAG,
+  // Exported for reuse by Phase 4's app/lib/pipeline/pipelinePrompts.js,
+  // which needs the same branch-diff-vs-default-branch formatting in its
+  // code-generation prompts - kept here rather than duplicated since diff
+  // formatting isn't itself a phase-specific concern.
+  formatDiffForPrompt,
 };

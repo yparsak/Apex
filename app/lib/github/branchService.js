@@ -36,9 +36,31 @@ async function githubRequest(token, path, options = {}) {
 // Mints one installation token scoped to a single repo. Callers that need
 // to check/create several branches on the same repo in one request should
 // mint once via this and pass the token through, rather than minting per
-// branch (see app/lib/branches/branchListService.js).
+// branch (see app/lib/branches/branchListService.js). Unscoped by
+// `permissions` - carries the installation's full granted permission set
+// (today, just `contents: write`, since that's all the App has).
 async function mintRepoToken(repoName) {
   const { token } = await mintInstallationToken({ repositories: [repoName] });
+  return token;
+}
+
+// Phase 4: a token scoped down to `contents: read`, minted for the
+// host-side "clone" step (app/lib/pipeline/workingTreeService.js downloads
+// the branch tarball with it). This is what makes "clone-only token" literal
+// - the write-capable token is never minted for, and never enters, that step
+// at all, rather than merely being unused by convention.
+async function mintCloneOnlyToken(repoName) {
+  const { token } = await mintInstallationToken({ repositories: [repoName], permissions: { contents: 'read' } });
+  return token;
+}
+
+// Phase 4: an explicit `contents: write` token minted fresh immediately
+// before the push step (app/lib/github/commitService.js), rather than reused
+// from an earlier step - this is the "write-capable token" the roadmap says
+// must never enter the sandbox; with Phase 4's design it never does, since
+// nothing GitHub-related ever runs inside the container.
+async function mintPushToken(repoName) {
+  const { token } = await mintInstallationToken({ repositories: [repoName], permissions: { contents: 'write' } });
   return token;
 }
 
@@ -91,4 +113,4 @@ async function createBranchFrom({ owner, repoName, newBranch, fromBranch, token 
 // app/lib/github/diffService.js, Phase 3) that need the same
 // auth/header-construction wrapper but call a different endpoint - keeps
 // that boilerplate in one place rather than re-implementing it per module.
-module.exports = { branchExists, createBranchFrom, mintRepoToken, githubRequest };
+module.exports = { branchExists, createBranchFrom, mintRepoToken, mintCloneOnlyToken, mintPushToken, githubRequest };

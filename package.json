@@ -9,7 +9,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "worker": "node worker.js",
+    "worker:dev": "node --watch worker.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

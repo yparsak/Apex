@@ -3,7 +3,7 @@ export
 
 MYSQL := mysql -h $(DB_HOST) -P $(DB_PORT) -u $(DB_USER) $(if $(DB_PASSWORD),-p$(DB_PASSWORD))
 
-.PHONY: help setup db-create db-schema db-drop install dev start test-github-token test-model-adapter
+.PHONY: help setup db-create db-schema db-drop install dev start worker worker-dev test-github-token test-model-adapter
 
 help:
 	@echo "Targets:"
@@ -14,6 +14,8 @@ help:
 	@echo "  install             npm install app dependencies"
 	@echo "  dev                 Run the app with auto-restart on file changes"
 	@echo "  start               Run the app"
+	@echo "  worker              Run the Phase 4 pipeline worker (polls queued sessions)"
+	@echo "  worker-dev          Run the pipeline worker with auto-restart on file changes"
 	@echo "  test-github-token   Manually verify GitHub App token minting (see Phase1_test.md)"
 	@echo "  test-model-adapter  Manually verify the model adapter (see Phase1_test.md)"
 
@@ -36,6 +38,12 @@ dev:
 
 start:
 	npm start
+
+worker:
+	npm run worker
+
+worker-dev:
+	npm run worker:dev
 
 test-github-token:
 	node scripts/test-github-token.js

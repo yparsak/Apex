@@ -1,14 +1,22 @@
 // Clarification-session page behavior for a single branch. Starts/resumes
 // the current user's session on this branch, renders the transcript plus
-// the pending-confirmation and other-users'-sessions panels, and drives the
-// message-send / requirement-resolve API calls. Follows the same
-// ApexApi/ApexDom conventions as branches.js.
+// the pending-confirmation, other-users'-sessions, and Phase 4 pipeline
+// panels, and drives the message-send / requirement-resolve API calls.
+// Follows the same ApexApi/ApexDom conventions as branches.js.
+//
+// Auto-polling (Phase 4): while the session is queued/running, this page
+// re-fetches GET .../sessions/:id on an interval so a user can submit
+// requirements and just watch the page update through
+// queued -> running -> completed/failed with no manual refresh and no
+// curl - see agent-prompts.md's Phase 4 section.
 
 document.addEventListener('DOMContentLoaded', () => {
   const escapeHtml = window.ApexDom.escapeHtml;
   const repoId = document.body.dataset.repoId;
   const branchId = document.body.dataset.branchId;
   const basePath = `/api/repos/${repoId}/branches/${branchId}/sessions`;
+
+  const POLL_INTERVAL_MS = 4000;
 
   const errorBox = document.getElementById('session-error');
   const statusBanner = document.getElementById('session-status-banner');
@@ -20,8 +28,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const finalizedPanel = document.getElementById('finalized-panel');
   const finalizedList = document.getElementById('finalized-requirements');
   const otherSessionsEl = document.getElementById('other-sessions');
+  const pipelinePanel = document.getElementById('pipeline-panel');
+  const pipelineStatusBadge = document.getElementById('pipeline-status-badge');
+  const pipelineError = document.getElementById('pipeline-error');
+  const pipelineCommitLink = document.getElementById('pipeline-commit-link');
+  const pipelineLog = document.getElementById('pipeline-log');
 
   let sessionId = null;
+  let pollTimer = null;
 
   function showError(message) {
     errorBox.textContent = message;
@@ -132,12 +146,58 @@ document.addEventListener('DOMContentLoaded', () => {
       .join('');
   }
 
+  function pipelineStatusVariant(status) {
+    return { running: 'secondary', completed: 'success', failed: 'danger' }[status] || 'secondary';
+  }
+
+  function renderPipeline(pipelineRun, repo, branch) {
+    if (!pipelineRun) {
+      pipelinePanel.classList.add('d-none');
+      return;
+    }
+    pipelinePanel.classList.remove('d-none');
+
+    pipelineStatusBadge.textContent = pipelineRun.status;
+    pipelineStatusBadge.className = `badge bg-${pipelineStatusVariant(pipelineRun.status)}`;
+
+    // textContent, not innerHTML - this is raw build/test output (and could
+    // include arbitrary file content on failure paths), never trusted as HTML.
+    pipelineLog.textContent = pipelineRun.log || '(no log yet)';
+
+    if (pipelineRun.errorMessage) {
+      pipelineError.textContent = pipelineRun.errorMessage;
+      pipelineError.classList.remove('d-none');
+    } else {
+      pipelineError.classList.add('d-none');
+    }
+
+    if (pipelineRun.status === 'completed' && pipelineRun.commitSha) {
+      pipelineCommitLink.href = `https://github.com/${repo.githubOwner}/${repo.name}/commit/${pipelineRun.commitSha}`;
+      pipelineCommitLink.textContent = `View pushed commit on ${branch.branchName} →`;
+      pipelineCommitLink.classList.remove('d-none');
+    } else {
+      pipelineCommitLink.classList.add('d-none');
+    }
+  }
+
+  function schedulePolling(status) {
+    const shouldPoll = status === 'queued' || status === 'running';
+    if (shouldPoll && !pollTimer) {
+      pollTimer = setInterval(refreshSession, POLL_INTERVAL_MS);
+    } else if (!shouldPoll && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
   function renderDetail(detail) {
     sessionId = detail.session.id;
     renderStatusBanner(detail.session.status);
     renderTranscript(detail.conversations);
     renderRequirements(detail.requirements);
     renderOtherSessions(detail.otherSessions);
+    renderPipeline(detail.pipelineRun, detail.repo, detail.branch);
+    schedulePolling(detail.session.status);
   }
 
   async function loadOrStartSession() {

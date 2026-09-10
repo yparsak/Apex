@@ -451,6 +451,23 @@ async function listOtherSessionsForBranch({ branchId, excludingUserId }) {
   }));
 }
 
+// Phase 4's latest pipeline_runs row for this session, if any - included in
+// getSessionDetail below so the UI's Pipeline panel can render status/log/
+// commit link off the same GET .../sessions/:id call, per the "don't add a
+// new endpoint for this" instruction. This is a plain read of a table Phase
+// 4 owns (app/lib/pipeline/pipelineService.js writes it); kept here rather
+// than importing pipelineService.js to avoid a require cycle, since
+// pipelineService.js already depends on this module for runChatTurn below.
+async function getLatestPipelineRun(sessionId) {
+  const rows = await db.query(
+    `SELECT id, status, started_at AS startedAt, finished_at AS finishedAt, log,
+            commit_sha AS commitSha, error_message AS errorMessage
+     FROM pipeline_runs WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`,
+    [sessionId]
+  );
+  return rows[0] || null;
+}
+
 async function getSessionDetail({ session, repo, branch }) {
   const conversations = await db.query(
     `SELECT id, role, content, created_at AS createdAt FROM conversations
@@ -464,8 +481,9 @@ async function getSessionDetail({ session, repo, branch }) {
     [session.id]
   );
   const otherSessions = await listOtherSessionsForBranch({ branchId: branch.id, excludingUserId: session.userId });
+  const pipelineRun = await getLatestPipelineRun(session.id);
 
-  return { session, repo, branch, conversations, requirements, otherSessions };
+  return { session, repo, branch, conversations, requirements, otherSessions, pipelineRun };
 }
 
 module.exports = {
@@ -475,4 +493,10 @@ module.exports = {
   postMessage,
   resolveRequirement,
   getSessionDetail,
+  // Reused as-is by Phase 4's app/lib/pipeline/pipelineService.js for its two
+  // system-triggered model calls (file-selection, code-changes), so every
+  // model call in the whole app goes through the same conversations/
+  // audit_log discipline established here - see agent-prompts.md's Phase 4
+  // section.
+  runChatTurn,
 };

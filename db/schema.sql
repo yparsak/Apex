@@ -128,3 +128,28 @@ CREATE TABLE IF NOT EXISTS pipeline_locks (
   FOREIGN KEY (locked_by_user_id) REFERENCES users(id),
   UNIQUE (repo_id, co_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Phase 4: one row per worker pickup attempt of a queued session (see
+-- worker.js and app/lib/pipeline/pipelineService.js). Deliberately a new,
+-- separate table rather than new columns bolted onto `sessions` - matches
+-- how normalized the rest of this schema already is (session_requirements,
+-- conversations, and audit_log are all separate from sessions too), and
+-- means this table needs no ALTER-based migration story: it's additive via
+-- plain CREATE TABLE IF NOT EXISTS, safe to apply against an
+-- already-provisioned dev database exactly like every other table here.
+-- `log` holds the sandboxed build/test run's captured stdout/stderr (capped
+-- and truncated before being written - see sandboxRunner.js); `commit_sha`
+-- is set only on a successful push; `error_message` is set only on failure
+-- (branch deleted, config invalid, codegen unparseable, build/test failed,
+-- push failed after exhausting fetch-and-retry).
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  session_id INT UNSIGNED NOT NULL,
+  status ENUM('running', 'completed', 'failed') NOT NULL DEFAULT 'running',
+  started_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at TIMESTAMP NULL,
+  log LONGTEXT NULL,
+  commit_sha VARCHAR(64) NULL,
+  error_message TEXT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
