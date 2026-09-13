@@ -9,7 +9,7 @@
 
 const db = require('../db');
 const logger = require('../logger');
-const { acquireLock, releaseLock } = require('../locks/pipelineLock');
+const { acquireLock, releaseLock, isLockHeldByUser, LockHeldError } = require('../locks/pipelineLock');
 const { createBranchFrom, mintRepoToken } = require('../github/branchService');
 
 async function ensureChangeOrder({ repoId, coNumber }) {
@@ -75,7 +75,28 @@ async function createNextBranch({ repo, user, coNumber }) {
 }
 
 async function resolveChangeOrder({ repo, user, coNumber, action, branchId }) {
-  await acquireLock({ repoId: repo.id, coNumber, userId: user.id });
+  // Track whether *this call* acquired a fresh lock, as opposed to finding
+  // one this same user already held from an earlier resolve in the same
+  // in-flight run (see below) - only a freshly-acquired lock should be
+  // released if something fails past this point. Releasing a lock we merely
+  // found already held would incorrectly free up a CO that's still
+  // legitimately serializing this user's own earlier, still-in-flight work.
+  let acquiredNewLock = false;
+  try {
+    await acquireLock({ repoId: repo.id, coNumber, userId: user.id });
+    acquiredNewLock = true;
+  } catch (err) {
+    if (!(err instanceof LockHeldError)) throw err;
+
+    // Re-selecting a branch you already resolved onto (e.g. the branch
+    // list still shows "Continue" for a branch you just created, since no
+    // `sessions` row exists yet - see app/lib/branches/branchListService.js)
+    // must not 409 against your own still-held lock. If someone else holds
+    // it, this is a real conflict and still fails.
+    const alreadyMine = await isLockHeldByUser({ repoId: repo.id, coNumber, userId: user.id });
+    if (!alreadyMine) throw err;
+    logger.info('resolve reused a lock this user already held', { repoId: repo.id, coNumber, userId: user.id });
+  }
 
   try {
     const changeOrder = await ensureChangeOrder({ repoId: repo.id, coNumber });
@@ -92,12 +113,14 @@ async function resolveChangeOrder({ repo, user, coNumber, action, branchId }) {
     // it once the full pipeline actually completes is Phase 5's job.
     return { changeOrder, branch };
   } catch (err) {
-    await releaseLock({ repoId: repo.id, coNumber });
-    logger.warn('CO resolution failed, pipeline lock released', {
-      repoId: repo.id,
-      coNumber,
-      error: err.message,
-    });
+    if (acquiredNewLock) {
+      await releaseLock({ repoId: repo.id, coNumber });
+      logger.warn('CO resolution failed, pipeline lock released', {
+        repoId: repo.id,
+        coNumber,
+        error: err.message,
+      });
+    }
     throw err;
   }
 }

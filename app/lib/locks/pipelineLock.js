@@ -42,4 +42,20 @@ async function releaseLock({ repoId, coNumber }) {
   await db.query('DELETE FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [repoId, coNumber]);
 }
 
-module.exports = { acquireLock, releaseLock, LockHeldError };
+// Lets a caller distinguish "someone else is mid-pipeline on this CO" from
+// "I'm the one holding this lock, from an earlier resolve in this same
+// in-flight run" - see coResolutionService.js's use of this. Without it, a
+// user who already resolved once (e.g. created a branch) gets a LockHeldError
+// on every subsequent /resolve for that CO - including re-selecting the exact
+// branch they just created, since the branch list has no other way to reach
+// the session-start screen until a sessions row exists (Phase 3).
+async function isLockHeldByUser({ repoId, coNumber, userId }) {
+  const rows = await db.query('SELECT 1 FROM pipeline_locks WHERE repo_id = ? AND co_number = ? AND locked_by_user_id = ?', [
+    repoId,
+    coNumber,
+    userId,
+  ]);
+  return rows.length > 0;
+}
+
+module.exports = { acquireLock, releaseLock, isLockHeldByUser, LockHeldError };
