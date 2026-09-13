@@ -86,8 +86,13 @@ document.addEventListener('DOMContentLoaded', () => {
     createArea.classList.toggle('d-none', !currentCo);
   }
 
+  // Does NOT call hideMessages() itself - it's also called internally by
+  // resolveCo() right after a successful resolve to refresh the row list,
+  // and hiding messages there would immediately erase the success banner
+  // resolveCo() just showed. Callers that should clear stale banners on
+  // their own (the filter/clear-filter buttons below) call hideMessages()
+  // themselves before invoking this.
   async function loadBranches(co) {
-    hideMessages();
     rowsEl.innerHTML = '<tr><td colspan="6" class="text-muted">Loading&hellip;</td></tr>';
     createArea.classList.add('d-none');
 
@@ -133,11 +138,13 @@ document.addEventListener('DOMContentLoaded', () => {
       showError('CO number must match format C followed by 8 digits (e.g. C12345678).');
       return;
     }
+    hideMessages();
     loadBranches(co);
   });
 
   clearFilterBtn.addEventListener('click', () => {
     coInput.value = '';
+    hideMessages();
     loadBranches('');
   });
 
