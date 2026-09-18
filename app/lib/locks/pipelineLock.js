@@ -7,11 +7,15 @@
 // UNIQUE (repo_id, co_number) constraint to fail if another session already
 // holds it; releasing is a DELETE.
 //
-// Phase 2 only wires acquire (at CO resolution, see
-// app/lib/branches/coResolutionService.js) and release-on-failure. There is
-// no sandbox/execution phase yet (Phases 3-5), so there is nothing
-// downstream to release the lock for on success - releasing once the full
-// pipeline actually completes is Phase 5's job, not this module's.
+// Phase 2 wires acquire (at CO resolution, see
+// app/lib/branches/coResolutionService.js) and release-on-failure.
+// Release-on-SUCCESS is Phase 5's job (see app/lib/pipeline/pipelineService.js's
+// runPipelineForSession): the lock stays held across Phase 3's clarification
+// loop and Phase 4's sandboxed code-gen/build/test/push, and is only
+// released once Phase 5's combined commit (code + requirements log +
+// optional spec doc) has actually landed. This is the first call site in the
+// project that calls releaseLock() on a successful outcome - see
+// agent-prompts.md's "Phase 5" section.
 
 const db = require('../db');
 

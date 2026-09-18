@@ -32,6 +32,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const pipelineStatusBadge = document.getElementById('pipeline-status-badge');
   const pipelineError = document.getElementById('pipeline-error');
   const pipelineCommitLink = document.getElementById('pipeline-commit-link');
+  const pipelineRequirementsLogLink = document.getElementById('pipeline-requirements-log-link');
+  const pipelineSpecDocLink = document.getElementById('pipeline-spec-doc-link');
   const pipelineLog = document.getElementById('pipeline-log');
 
   let sessionId = null;
@@ -150,7 +152,14 @@ document.addEventListener('DOMContentLoaded', () => {
     return { running: 'secondary', completed: 'success', failed: 'danger' }[status] || 'secondary';
   }
 
-  function renderPipeline(pipelineRun, repo, branch) {
+  // Phase 5: once a pipeline run has completed, the same combined commit
+  // that pushed the code changes also carries the requirements-log append
+  // and (when the model judged one was needed) the regenerated Spec/
+  // Communication Protocol doc - see agent-prompts.md's "Phase 5" section.
+  // Both are just links to files on the DEV branch at a known commit, so no
+  // new API endpoint was needed - repo/branch/commitSha/specDocPath are all
+  // already present in this same GET .../sessions/:id response.
+  function renderPipeline(pipelineRun, repo, branch, requirementsLogPath) {
     if (!pipelineRun) {
       pipelinePanel.classList.add('d-none');
       return;
@@ -178,6 +187,27 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       pipelineCommitLink.classList.add('d-none');
     }
+
+    // Requirements log: always present once a run has completed, since
+    // every successful run appends to it (creating the file the first time).
+    if (pipelineRun.status === 'completed' && requirementsLogPath) {
+      pipelineRequirementsLogLink.href = `https://github.com/${repo.githubOwner}/${repo.name}/blob/${branch.branchName}/${requirementsLogPath}`;
+      pipelineRequirementsLogLink.textContent = 'View requirements log →';
+      pipelineRequirementsLogLink.classList.remove('d-none');
+    } else {
+      pipelineRequirementsLogLink.classList.add('d-none');
+    }
+
+    // Spec doc: only linked when THIS run actually (re)generated one -
+    // pipelineRun.specDocPath is null on the (common) runs where the model
+    // judged no regeneration was needed.
+    if (pipelineRun.status === 'completed' && pipelineRun.specDocPath) {
+      pipelineSpecDocLink.href = `https://github.com/${repo.githubOwner}/${repo.name}/blob/${branch.branchName}/${pipelineRun.specDocPath}`;
+      pipelineSpecDocLink.textContent = 'View Spec/Communication Protocol doc →';
+      pipelineSpecDocLink.classList.remove('d-none');
+    } else {
+      pipelineSpecDocLink.classList.add('d-none');
+    }
   }
 
   function schedulePolling(status) {
@@ -196,7 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTranscript(detail.conversations);
     renderRequirements(detail.requirements);
     renderOtherSessions(detail.otherSessions);
-    renderPipeline(detail.pipelineRun, detail.repo, detail.branch);
+    renderPipeline(detail.pipelineRun, detail.repo, detail.branch, detail.requirementsLogPath);
     schedulePolling(detail.session.status);
   }
 

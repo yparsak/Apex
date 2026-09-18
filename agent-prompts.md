@@ -499,3 +499,242 @@ avoid a require cycle since `pipelineService.js` already depends on
 the existing `GET .../sessions/:id` response — no new endpoint was added for
 this, per roadmap.md's UI requirement that the whole flow be watchable from
 a single page.
+
+## Phase 5: DEV branch delivery
+
+Phase 5 is where a pipeline run that already committed and pushed code
+(Phase 4) becomes an actually *complete* delivery: the branch's requirements
+log is appended to, the Spec/Communication Protocol doc is regenerated when
+warranted, and — for the first time in this project — the CO's
+`pipeline_locks` row is released on a successful run. See roadmap.md's
+"Phase 5 — DEV branch delivery" bullets for the scope this implements, and
+`Phase5_test.md` for how to exercise it end to end. This section assumes
+the "Phase 4" section above as background — it documents what Phase 5 adds
+on top of that pipeline, not a separate one.
+
+### Where this plugs in, and why it's one commit, not two
+
+`pipelineService.runPipelineForSession` (Phase 4) already downloads the
+branch's tree to a host-side `treeDir`, applies the model's generated code
+changes to it, and validates the result in a sandboxed build/test run before
+ever calling `commitAndPushChanges`. Phase 5's two new steps —
+`requirementsLogService.buildRequirementsLogChange` and
+`specDocService.maybeBuildSpecDocChange` — run **after that sandbox success**
+and **before** the single `commitAndPushChanges` call, reading and writing
+into the exact same `treeDir`. Their outputs are folded into the same
+`changes` array Phase 4 already builds, so everything — code, requirements
+log, and (when applicable) the spec doc — lands in one atomic commit.
+
+This was a deliberate choice over a second, later push:
+
+- **No GitHub call is needed** to read an already-existing requirements log
+  or spec doc — both would already be sitting in `treeDir`, downloaded as
+  part of the same tarball Phase 4 already fetched, since a prior session's
+  Phase 5 run would have committed them to the same branch.
+- **No partial-delivery window.** A separate second push would leave a real,
+  observable interval where the branch has new code but not yet the log/doc
+  update (or, if the second push then failed, code with no delivery record
+  at all, silently). Roadmap.md's Accepted Risk #6 already worries about the
+  requirements log and spec doc drifting from each other and from branch
+  state; a two-push design would add a third way for that risk to manifest,
+  for no benefit.
+- **`commitAndPushChanges` needed no changes** to support this — it already
+  re-fetches the current head SHA fresh on every call/retry attempt (see the
+  "Fetch-and-retry" section above); it simply receives a longer `changes`
+  array this phase.
+- **Gating on sandbox success first is itself a deliberate design choice**:
+  it is not worth generating delivery docs for code that doesn't pass its
+  own build/test. If the sandbox fails, Phase 5's steps never run at all —
+  the pipeline returns early exactly as it already did before this phase.
+
+### File/path conventions
+
+Both paths live in `app/lib/pipeline/deliveryPaths.js`, a tiny
+zero-dependency module, so every module that needs to agree on them
+(`requirementsLogService.js`, `specDocService.js`, `pipelineService.js`, and
+`app/lib/branches/sessionService.js`'s read view for the UI) imports from one
+place rather than duplicating a string literal:
+
+- **`APEX-REQUIREMENTS-LOG.md`** (repo root) — the user requirements log.
+  One file per branch (not per CO), with a `## {CO number}` heading per
+  change order inside it — a branch can, and often will, accumulate work
+  under more than one CO over its life, so the file is branch-scoped and the
+  heading is what's CO-scoped.
+- **`docs/apex-spec/{coNumber}.md`** — the Spec/Communication Protocol
+  document. CO-keyed, per roadmap.md's explicit wording, and deliberately
+  *not* branch-keyed: multiple parallel per-user branches for the same CO
+  (an accepted design choice — see roadmap.md's Accepted Risk #7) converge
+  on the same doc path, so whichever branch's Phase 5 run last regenerated
+  it is judged against by the next one, rather than each branch drifting its
+  own copy that nobody else's regeneration decision ever sees.
+
+### Requirements log: mechanical, no model call
+
+`app/lib/pipeline/requirementsLogService.js` builds the updated log content
+with plain string/array operations — `session_requirements` content that
+`getConfirmedRequirementsForSession` already reads for Phase 4's code-gen is
+reused verbatim as the log entry's bullets, since this is a *raw,
+user-authored* record ("what was asked"), not something a model should be
+paraphrasing or judging. No model call, no fenced-block tag, no parsing
+module — there is no ambiguity to resolve here, unlike the spec doc below.
+
+The text manipulation (`appendEntryUnderHeading`) is intentionally not a
+Markdown parser: it finds the `## {CO}` heading line (or creates one at EOF
+if this CO hasn't been logged on this branch before) and inserts the new
+entry immediately before the next `## ` heading or EOF. This is sufficient
+because this module is the *only* writer of this file's structure — it never
+has to cope with a heading format some other tool or a human hand-edit
+introduced. Each entry is stamped with the branch name, session id, an ISO
+timestamp, and the submitting user's username/initials (added to
+`pipelineService.loadPipelineContext`'s query this phase, joining `users`)
+so a raw-text audit of the file has a real "who and when," not just content.
+
+### Spec/Communication Protocol doc: model-judgment-gated, three-step protocol
+
+This is the one genuinely new judgment call in this phase, and it follows
+the exact same two-step (here, three-step), non-tool-calling,
+fenced-code-block convention Phase 3/4 already established
+(`app/lib/pipeline/specDocPrompts.js` / `specDocResponseParsing.js` /
+`specDocService.js`), reusing `app/lib/parsing/fencedBlock.js` for
+extraction and `app/lib/branches/sessionService.js`'s `runChatTurn` for the
+`conversations`/`audit_log` writes, exactly like Phase 4's two calls do.
+
+1. **`` ```spec-decision `` `** (new tag) — given the working tree's current
+   full file listing (via `workingTreeService.listFilePaths`, the same
+   helper Phase 4's code-gen file-selection step uses) and the existing spec
+   doc's content if one already exists at the CO-keyed path (read via plain
+   `fs`, not a GitHub call), the model replies with a JSON object:
+   `{"hasApiSurface": boolean, "docIsCurrent": boolean}`. `docIsCurrent` is
+   only meaningful when `hasApiSurface` is true, and the prompt explicitly
+   instructs the model to answer conservatively (prefer `false` when unsure)
+   so an uncertain judgment leans toward regenerating rather than silently
+   letting a doc go stale. `parseSpecDecision` requires both fields present
+   as actual booleans — anything else (missing block, invalid JSON, wrong
+   shape, non-boolean field) returns `null`.
+   - **Fail-closed discipline, spelled out because it's easy to get backward
+     here:** an unparseable `spec-decision` reply does **not** default to
+     "no API surface, skip" (which could silently leave a real API
+     undocumented) and does **not** default to "doc is stale, regenerate"
+     (which would fabricate a doc off a judgment the model never actually
+     made). `specDocService.decideSpecDocAction` throws
+     `SPEC_DECISION_PARSE_FAILED` on `null`, which — exactly like
+     `CODEGEN_PARSE_FAILED` in Phase 4 — fails the entire pipeline run rather
+     than guessing in either direction. This is the literal implementation
+     of the instruction that "guessing either way is exactly the kind of
+     ambiguity this project refuses to paper over."
+2. **Only when `hasApiSurface && !docIsCurrent`**, a file-selection step
+   reusing Phase 4's existing **`` ```files-needed `` `** tag and
+   `parseFilesNeeded` parser directly — not a new, doc-specific tag. The
+   semantics ("name existing files you need to read in full before you can
+   proceed, from this file listing, empty array is a valid answer") are
+   identical to Phase 4's code-gen file-selection step; only the *purpose*
+   differs, and purpose doesn't need its own wire format. Every named path
+   is checked against the actual working tree, same as Phase 4 — an unknown
+   path fails the run closed with `SPEC_DECISION_PARSE_FAILED` rather than
+   being dropped or guessed at.
+3. **`` ```spec-document `` `** (new tag) — given the full content of
+   whatever files step 2 asked for, the model emits the **entire**
+   regenerated document as a single fenced block of plain Markdown prose,
+   not JSON — this is document content, not structured data, so
+   `parseSpecDocument` just returns the trimmed block content verbatim
+   (`null` on a missing or empty block, same fail-closed rule as every other
+   tag in this project).
+
+**Must reflect cumulative state, not a diff:** roadmap.md is explicit that
+the doc is "regenerated from full current branch state (not diff-only)." All
+three steps above are driven by `treeDir`'s current file listing and file
+contents — the branch's diff vs. its default branch (`getBranchDiffSummary`,
+already fetched once earlier in `runPipelineForSession` and passed through
+to `specDocService.maybeBuildSpecDocChange` rather than re-fetched) is
+included in every one of `specDocPrompts.js`'s three prompts, but labeled
+explicitly as "SUPPORTING CONTEXT ONLY... NOT the source of truth" — it
+helps the model notice what's recently changed, but the file listing/file
+contents are what the model is told to actually describe.
+
+**Reused helpers, not new ones:** `specDocPrompts.js` imports
+`formatDiffForPrompt` from `app/lib/branches/clarificationPrompts.js` and
+`formatFileListForPrompt`/`FILES_NEEDED_TAG` from
+`app/lib/pipeline/pipelinePrompts.js` (the latter newly exported this phase)
+rather than re-implementing either — same "configure > reuse > extend >
+new helper" discipline the rest of this project already follows.
+
+### Why a spec-doc-judgment failure still fails the whole session
+
+Per the explicit design decision behind this phase: if
+`maybeBuildSpecDocChange` throws (`SPEC_DECISION_PARSE_FAILED` or
+`SPEC_DOCUMENT_PARSE_FAILED`), `pipelineService.runPipelineForSession`'s
+existing `catch` block handles it exactly like `CODEGEN_PARSE_FAILED` —
+`sessions.status` goes to `failed`, `pipeline_runs.error_message` records
+it, and (critically) **nothing is pushed and the lock is not released**,
+even though the underlying code changes already passed their sandboxed
+build/test. This means a session whose *code* would have been perfectly
+fine can still end up `failed` because the model's spec-doc judgment call
+errored out. That is the intended, conservative behavior, not a bug to
+design around: this project has never silently skipped a delivery artifact
+just because producing it was hard (see Phase 3's overlap-check and Phase
+4's code-gen fail-closed sections above for the same philosophy applied
+elsewhere), and Phase 5 is exactly the phase where "delivery" stops meaning
+just "code landed" and starts meaning "code, spec doc, and requirements log
+landed together."
+
+### Lock release — the first call site in the project
+
+`app/lib/locks/pipelineLock.js`'s `releaseLock` has existed since Phase 2
+(`coResolutionService.js` releases it only on a resolution *failure*) but,
+until this phase, nothing ever called it on a *success* path — both files'
+comments said as much, framing this as "Phase 5's job." This phase is that
+job: immediately after `commitAndPushChanges` returns a commit SHA for the
+combined commit, `runPipelineForSession` calls
+`releaseLock({ repoId, coNumber })`, and only then calls
+`markSessionCompleted`. If the combined commit never lands (any failure
+above, including a spec-doc judgment failure), `releaseLock` is never
+reached and the lock stays held — consistent with every other failure mode
+in this pipeline holding the lock, so a human can see a stuck lock and
+investigate rather than the tool guessing it's safe to let a new pipeline
+run start against the same CO.
+
+**Known edge case, documented rather than engineered around:** if the
+combined commit succeeds but a step *after* it (the `releaseLock` call
+itself, or `markSessionCompleted`) then throws — a DB hiccup, for
+example — `runPipelineForSession`'s `catch` block still marks the session
+`failed`, even though code, the requirements log, and any spec doc are
+already genuinely on GitHub. `commitSha` and `specDocPath` are hoisted
+above the `try` block specifically so this case still records the real
+commit SHA in `pipeline_runs` rather than losing it, but the lock
+intentionally is **not** assumed to have been released, and the session is
+**not** reported as successfully completed — a human still has to look at
+this one, matching the "no silent guessing" convention rather than trying
+to distinguish "the push succeeded but bookkeeping failed" from "something
+worse happened" automatically.
+
+### `pipeline_runs.spec_doc_path`
+
+One new nullable column (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+supported since MariaDB 10.0.2 — additive and safe to re-run, same
+discipline the rest of this schema already follows for brand-new tables),
+set only on a run where the spec doc was actually (re)generated. This is
+what lets the UI (below) distinguish "this run didn't touch the API
+surface" from "this run regenerated the doc" without re-deriving that from
+the commit contents.
+
+### UI: two more links on the Pipeline panel
+
+`app/views/session.ejs`'s Pipeline panel gains two more `<a>` placeholders
+alongside the existing commit link, and `app/public/js/session.js`'s
+`renderPipeline` populates them once a run is `completed`:
+
+- **Requirements log** — always linked once a run completes (every
+  successful run appends to it), pointing at
+  `https://github.com/{owner}/{repo}/blob/{branch}/{requirementsLogPath}`.
+  `requirementsLogPath` is returned by `sessionService.getSessionDetail` off
+  the same `app/lib/pipeline/deliveryPaths.js` constant `pipelineService.js`
+  writes to, rather than hardcoded a second time in `session.js` — one
+  source of truth for the path, per this project's "reuse before
+  duplicate" convention.
+- **Spec doc** — only linked when `pipelineRun.specDocPath` is non-null
+  (i.e. this specific run regenerated it), pointing at
+  `https://github.com/{owner}/{repo}/blob/{branch}/{specDocPath}`.
+
+No new endpoint was added — both fields are folded into the existing
+`GET .../sessions/:id` response, per the same "watchable from one page"
+convention Phase 4's `pipelineRun` field already established.

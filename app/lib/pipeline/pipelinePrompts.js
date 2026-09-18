@@ -113,4 +113,11 @@ module.exports = {
   buildCodeChangesMessages,
   FILES_NEEDED_TAG,
   FILE_CHANGES_TAG,
+  // Exported for reuse by Phase 5's app/lib/pipeline/specDocPrompts.js, which
+  // needs the same "here's the file listing" formatting for its own
+  // decision/file-selection/document prompts - kept here rather than
+  // duplicated since file-listing formatting isn't itself a phase-specific
+  // concern (same reasoning clarificationPrompts.js's formatDiffForPrompt
+  // export already documents for Phase 4's reuse of it).
+  formatFileListForPrompt,
 };

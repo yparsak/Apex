@@ -1,20 +1,21 @@
-// Phase 4: sandboxed execution. Orchestrates the full pipeline for one
-// claimed `queued` session (see worker.js): branch-existence re-check,
-// host-side "clone" (tarball download), declarative build/test config,
-// two-step non-tool-calling code generation against the model adapter,
-// applying those changes to the working tree, a sandboxed build/test run,
-// and - only on success - a push via GitHub's Git Data API. Ends with the
-// session marked `completed`/`failed`. Deliberately does NOT touch
-// `pipeline_locks` and does NOT generate the Spec/Communication Protocol doc
-// or the requirements-log file - releasing the lock and both of those are
-// Phase 5's job, layered onto an already-pushed branch (see
-// app/lib/locks/pipelineLock.js's file comment and roadmap.md's Phase 4/5
-// split).
+// Phase 4/5: sandboxed execution + DEV branch delivery. Orchestrates the
+// full pipeline for one claimed `queued` session (see worker.js):
+// branch-existence re-check, host-side "clone" (tarball download),
+// declarative build/test config, two-step non-tool-calling code generation
+// against the model adapter, applying those changes to the working tree, a
+// sandboxed build/test run, and - only on success - the Phase 5 delivery
+// steps (requirements-log append, conditional Spec/Communication Protocol
+// doc regeneration) folded into ONE combined push via GitHub's Git Data API,
+// followed by releasing the CO's pipeline lock. Ends with the session marked
+// `completed`/`failed`.
 //
-// See roadmap.md's "Phase 4 - Sandboxed execution" bullets for the scope
-// this implements and agent-prompts.md's "Phase 4" section for the full
-// design rationale (why no tool-calling, why no git binary, why the
-// container is scoped the way it is, the fenced-block tags this introduces).
+// See roadmap.md's "Phase 4 - Sandboxed execution" and "Phase 5 - DEV branch
+// delivery" bullets for the scope this implements, and agent-prompts.md's
+// "Phase 4" and "Phase 5" sections for the full design rationale (why no
+// tool-calling, why no git binary, why the container is scoped the way it
+// is, the fenced-block tags each phase introduces, and why Phase 5's new
+// steps land in the same commit as Phase 4's code changes rather than a
+// second, separate push).
 
 const fs = require('fs/promises');
 const path = require('path');
@@ -24,11 +25,15 @@ const { branchExists } = require('../github/branchService');
 const { getBranchDiffSummary } = require('../github/diffService');
 const { commitAndPushChanges } = require('../github/commitService');
 const { runChatTurn } = require('../branches/sessionService');
+const { releaseLock } = require('../locks/pipelineLock');
 const { readPipelineConfig } = require('./pipelineConfig');
 const { downloadAndExtractTree, listFilePaths, cleanupWorkingTree } = require('./workingTreeService');
 const { buildFileSelectionMessages, buildCodeChangesMessages, FILES_NEEDED_TAG, FILE_CHANGES_TAG } = require('./pipelinePrompts');
 const { parseFilesNeeded, parseFileChanges } = require('./pipelineResponseParsing');
 const { runSandbox } = require('./sandboxRunner');
+const { buildRequirementsLogChange } = require('./requirementsLogService');
+const { maybeBuildSpecDocChange } = require('./specDocService');
+const { REQUIREMENTS_LOG_PATH } = require('./deliveryPaths');
 
 function makeCodegenError(message) {
   const err = new Error(message);
@@ -45,10 +50,12 @@ function makeCodegenError(message) {
 async function loadPipelineContext(sessionId) {
   const rows = await db.query(
     `SELECT s.id AS sessionId, s.user_id AS userId, s.status AS sessionStatus, s.branch_id AS branchId,
+            u.username AS username, u.initials AS initials,
             b.branch_name AS branchName, b.co_number AS coNumber, b.status AS branchStatus,
             r.id AS repoId, r.name AS repoName, r.default_branch_name AS defaultBranchName,
             o.name AS githubOwner
      FROM sessions s
+     JOIN users u ON u.id = s.user_id
      JOIN branches b ON b.id = s.branch_id
      JOIN repos r ON r.id = b.repo_id
      JOIN repo_groups rg ON rg.id = r.repo_group_id
@@ -60,7 +67,10 @@ async function loadPipelineContext(sessionId) {
   if (!row) return null;
 
   return {
-    session: { id: row.sessionId, userId: row.userId, status: row.sessionStatus },
+    // username/initials (Phase 5): who to attribute this session's entry in
+    // the requirements log to - the raw, user-authored record roadmap.md
+    // describes needs a real submitter, not just a session id.
+    session: { id: row.sessionId, userId: row.userId, status: row.sessionStatus, username: row.username, initials: row.initials },
     branch: { id: row.branchId, branchName: row.branchName, coNumber: row.coNumber, status: row.branchStatus },
     repo: { id: row.repoId, name: row.repoName, defaultBranchName: row.defaultBranchName, githubOwner: row.githubOwner },
   };
@@ -82,10 +92,10 @@ async function createPipelineRun(sessionId) {
   return result.insertId;
 }
 
-async function finishPipelineRun(runId, { status, log, commitSha, errorMessage }) {
+async function finishPipelineRun(runId, { status, log, commitSha, specDocPath, errorMessage }) {
   await db.query(
-    `UPDATE pipeline_runs SET status = ?, log = ?, commit_sha = ?, error_message = ?, finished_at = NOW() WHERE id = ?`,
-    [status, log || null, commitSha || null, errorMessage || null, runId]
+    `UPDATE pipeline_runs SET status = ?, log = ?, commit_sha = ?, spec_doc_path = ?, error_message = ?, finished_at = NOW() WHERE id = ?`,
+    [status, log || null, commitSha || null, specDocPath || null, errorMessage || null, runId]
   );
 }
 
@@ -169,9 +179,15 @@ async function applyChangesToWorkingTree(treeDir, changes) {
   }
 }
 
-function buildCommitMessage({ coNumber, requirements }) {
+// Phase 5: the commit message now also records which delivery artifacts
+// (beyond the code itself) rode along in this same combined commit - see
+// the "combined-single-commit design" note in agent-prompts.md's Phase 5
+// section for why these are never a separate, later push.
+function buildCommitMessage({ coNumber, requirements, specDocPath }) {
   const bullets = requirements.map((r) => `- ${r}`).join('\n');
-  return `Apex: implement requirements for ${coNumber}\n\n${bullets}`;
+  const delivery = [`- ${REQUIREMENTS_LOG_PATH} updated`];
+  if (specDocPath) delivery.push(`- ${specDocPath} regenerated`);
+  return `Apex: implement requirements for ${coNumber}\n\n${bullets}\n\nDelivery:\n${delivery.join('\n')}`;
 }
 
 // --- orchestration -------------------------------------------------------------
@@ -185,6 +201,14 @@ async function runPipelineForSession(sessionId) {
   const { session, branch, repo } = ctx;
   const runId = await createPipelineRun(sessionId);
   let workDir = null;
+  // Hoisted so a failure in Phase 5's post-push bookkeeping (releaseLock,
+  // markSessionCompleted) - which can only happen AFTER a successful push -
+  // still lets the catch block below record what actually landed, rather
+  // than losing that information because these were declared inside the
+  // `try` block's scope.
+  let sandboxResult = null;
+  let commitSha = null;
+  let specDocPath = null;
 
   try {
     // Second of the two on-demand deletion checkpoints (the first is
@@ -236,7 +260,7 @@ async function runPipelineForSession(sessionId) {
     await applyChangesToWorkingTree(treeDir, changes);
 
     const containerName = `apex-pipeline-${sessionId}-${runId}`;
-    const sandboxResult = await runSandbox({
+    sandboxResult = await runSandbox({
       image: config.image,
       treeDir,
       buildCommand: config.buildCommand,
@@ -255,22 +279,75 @@ async function runPipelineForSession(sessionId) {
       return;
     }
 
-    const commitMessage = buildCommitMessage({ coNumber: branch.coNumber, requirements });
-    const commitSha = await commitAndPushChanges({
+    // --- Phase 5: DEV branch delivery -------------------------------------
+    // Only reached once the sandboxed build/test has actually passed - never
+    // worth generating delivery docs for code that doesn't pass its own
+    // tests (see agent-prompts.md's "Phase 5" section). Both steps read/write
+    // the SAME treeDir the code changes were just applied to and validated
+    // in, and their outputs are folded into ONE combined `changes` array
+    // pushed as a single atomic commit below - never a second, later push -
+    // so there is no window where code lands without the requirements log
+    // (and, when applicable, the spec doc), or vice versa.
+
+    const requirementsLogChange = await buildRequirementsLogChange({
+      treeDir,
+      branch,
+      session,
+      submittedBy: { username: session.username, initials: session.initials },
+      requirements,
+    });
+
+    // Model-judgment-gated: usually a no-op (most sessions don't touch the
+    // API surface). Any parse failure here (SPEC_DECISION_PARSE_FAILED /
+    // SPEC_DOCUMENT_PARSE_FAILED) throws and is caught by this function's
+    // catch block below, same as CODEGEN_PARSE_FAILED - a session whose code
+    // would otherwise have been fine can still end up `failed` if the
+    // model's spec-doc judgment call errors out. That is the intended,
+    // conservative behavior (see agent-prompts.md's "Phase 5" section), not
+    // a bug: this project never silently skips a delivery artifact just
+    // because generating it was hard.
+    const specDocResult = await maybeBuildSpecDocChange({ session, repo, branch, treeDir, diff });
+    specDocPath = specDocResult.path;
+
+    const allChanges = specDocResult.change ? [...changes, requirementsLogChange, specDocResult.change] : [...changes, requirementsLogChange];
+
+    const commitMessage = buildCommitMessage({ coNumber: branch.coNumber, requirements, specDocPath });
+    commitSha = await commitAndPushChanges({
       owner: repo.githubOwner,
       repoName: repo.name,
       branch: branch.branchName,
-      changes,
+      changes: allChanges,
       commitMessage,
     });
 
+    // Only once this single combined commit (code + requirements log +
+    // optional spec doc) has actually landed does the pipeline release the
+    // CO's pipeline lock - the first code in this whole project to call
+    // releaseLock. See app/lib/locks/pipelineLock.js's and
+    // app/lib/branches/coResolutionService.js's file comments, both of which
+    // have been waiting for exactly this call since Phase 2, and
+    // agent-prompts.md's "Phase 5" section for the full rationale.
+    await releaseLock({ repoId: repo.id, coNumber: branch.coNumber });
+
     await markSessionCompleted(sessionId);
-    await finishPipelineRun(runId, { status: 'completed', log: sandboxResult.log, commitSha });
-    logger.info('pipeline completed', { sessionId, commitSha });
+    await finishPipelineRun(runId, { status: 'completed', log: sandboxResult.log, commitSha, specDocPath });
+    logger.info('pipeline completed', { sessionId, commitSha, specDocPath });
   } catch (err) {
     logger.error('pipeline run failed', { sessionId, error: err.message });
     await markSessionFailed(sessionId).catch(() => {});
-    await finishPipelineRun(runId, { status: 'failed', errorMessage: err.message }).catch(() => {});
+    // commitSha/specDocPath/sandboxResult.log are non-null here only in the
+    // rare edge case where the combined commit already succeeded but a step
+    // after it (releaseLock, markSessionCompleted) then failed - preserving
+    // them means the DB accurately reflects that code was pushed even though
+    // the run is still reported `failed` (the lock intentionally stays held
+    // in that case; see agent-prompts.md's "Phase 5" section).
+    await finishPipelineRun(runId, {
+      status: 'failed',
+      log: sandboxResult ? sandboxResult.log : null,
+      commitSha,
+      specDocPath,
+      errorMessage: err.message,
+    }).catch(() => {});
   } finally {
     if (workDir) await cleanupWorkingTree(workDir);
   }

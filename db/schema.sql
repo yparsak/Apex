@@ -110,14 +110,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
   FOREIGN KEY (repo_id) REFERENCES repos(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Phase 2: serializes the full pipeline (clone -> sandbox build/test -> push)
--- one session at a time per (repo_id, co_number) - see roadmap.md's "Lock
--- scope: entire pipeline" decision. A row's existence IS the lock: acquiring
--- is an INSERT that relies on the UNIQUE constraint below to fail when
--- another session already holds it; releasing is a DELETE. Phase 2 only
--- wires acquire-at-CO-resolution and release-on-failure, since the sandbox/
--- execution phases (3-5) don't exist yet - releasing on a *successful*
--- full-pipeline completion is Phase 5's job, not this table's.
+-- Phase 2: serializes the full pipeline (clone -> sandbox build/test -> push
+-- -> Phase 5 delivery) one session at a time per (repo_id, co_number) - see
+-- roadmap.md's "Lock scope: entire pipeline" decision. A row's existence IS
+-- the lock: acquiring is an INSERT that relies on the UNIQUE constraint
+-- below to fail when another session already holds it; releasing is a
+-- DELETE. Phase 2 wires acquire-at-CO-resolution and release-on-failure;
+-- release on a *successful* full-pipeline completion is wired by Phase 5
+-- (see app/lib/pipeline/pipelineService.js), only after its combined commit
+-- - code changes, the requirements-log update, and any regenerated spec doc
+-- - has actually landed.
 CREATE TABLE IF NOT EXISTS pipeline_locks (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   repo_id INT UNSIGNED NOT NULL,
@@ -153,3 +155,17 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   error_message TEXT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Phase 5: DEV-branch delivery. Records the CO-keyed Spec/Communication
+-- Protocol document path (see app/lib/pipeline/deliveryPaths.js) ONLY when
+-- this run's model judgment actually (re)generated one as part of its
+-- combined commit - NULL is the common case (most sessions don't touch the
+-- API surface; see app/lib/pipeline/specDocService.js). Not modeled as a new
+-- table: it's one more fact about a run this table already tracks, sharing
+-- the same row as commit_sha rather than needing its own join. Added via
+-- `ADD COLUMN IF NOT EXISTS` (supported since MariaDB 10.0.2) rather than a
+-- new table, keeping this additive and safe to re-apply against an
+-- already-provisioned dev database, matching this schema's existing
+-- CREATE-TABLE-IF-NOT-EXISTS discipline for a case where the table itself
+-- already exists.
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS spec_doc_path VARCHAR(500) NULL AFTER commit_sha;

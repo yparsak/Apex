@@ -108,9 +108,11 @@ async function resolveChangeOrder({ repo, user, coNumber, action, branchId }) {
 
     // Lock intentionally stays held past this point. Phase 2 only resolves
     // *which* branch a pipeline run will target - the pipeline itself
-    // (clone -> sandbox build/test -> push) doesn't exist yet (Phases 3-5),
-    // so there's nothing to release the lock for on success yet. Releasing
-    // it once the full pipeline actually completes is Phase 5's job.
+    // (clone -> sandbox build/test -> push -> delivery) runs later, across
+    // Phases 3-5, so there's nothing to release the lock for on success yet
+    // here. Releasing it once the full pipeline actually completes,
+    // including Phase 5's delivery steps, is
+    // app/lib/pipeline/pipelineService.js's job (see its runPipelineForSession).
     return { changeOrder, branch };
   } catch (err) {
     if (acquiredNewLock) {

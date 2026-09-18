@@ -36,6 +36,11 @@ const { getModelAdapter } = require('../model');
 const { getBranchDiffSummary } = require('../github/diffService');
 const { buildStartSummaryMessages, buildQaSystemPrompt, buildOverlapCheckMessages } = require('./clarificationPrompts');
 const { parseRequirementsReady, parseOverlapCheck } = require('./responseParsing');
+// Phase 5: a small, dependency-free constant module (see
+// app/lib/pipeline/deliveryPaths.js's own comment) - importing it here does
+// NOT create the require cycle the getLatestPipelineRun comment below
+// guards against, since deliveryPaths.js requires nothing itself.
+const { REQUIREMENTS_LOG_PATH } = require('../pipeline/deliveryPaths');
 
 // How many prior audit_log rows (across all users/sessions) to feed into the
 // start/resume summary for this (repo, CO). Fixed, non-user-supplied
@@ -461,7 +466,7 @@ async function listOtherSessionsForBranch({ branchId, excludingUserId }) {
 async function getLatestPipelineRun(sessionId) {
   const rows = await db.query(
     `SELECT id, status, started_at AS startedAt, finished_at AS finishedAt, log,
-            commit_sha AS commitSha, error_message AS errorMessage
+            commit_sha AS commitSha, spec_doc_path AS specDocPath, error_message AS errorMessage
      FROM pipeline_runs WHERE session_id = ? ORDER BY started_at DESC LIMIT 1`,
     [sessionId]
   );
@@ -483,7 +488,15 @@ async function getSessionDetail({ session, repo, branch }) {
   const otherSessions = await listOtherSessionsForBranch({ branchId: branch.id, excludingUserId: session.userId });
   const pipelineRun = await getLatestPipelineRun(session.id);
 
-  return { session, repo, branch, conversations, requirements, otherSessions, pipelineRun };
+  // requirementsLogPath (Phase 5): a fixed, known path (see
+  // app/lib/pipeline/deliveryPaths.js) - included here so the session page's
+  // Pipeline panel can build a GitHub link off this same response, per the
+  // "don't add a new endpoint for this" convention Phase 4 already
+  // established for pipelineRun itself. Unlike specDocPath (which only makes
+  // sense per pipeline_runs row, since regeneration is conditional), this
+  // constant never changes, but is still returned here rather than
+  // hardcoded client-side, so the UI has exactly one source of truth for it.
+  return { session, repo, branch, conversations, requirements, otherSessions, pipelineRun, requirementsLogPath: REQUIREMENTS_LOG_PATH };
 }
 
 module.exports = {
