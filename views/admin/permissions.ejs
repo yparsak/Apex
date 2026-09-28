@@ -1,0 +1,43 @@
+<%- include('../partials/head', { title: 'Admin - Permissions', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'permissions' }) %>
+    <h1>Permissions</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <table class="admin-table">
+      <thead><tr><th>User</th><th>Repo Group</th><th></th></tr></thead>
+      <tbody>
+        <% grants.forEach(function(g) { %>
+        <tr>
+          <td><%= g.username %></td>
+          <td><%= g.org_name %> / <%= g.repo_group_name %></td>
+          <td>
+            <form method="POST" action="/admin/permissions/<%= g.id %>/revoke" class="row-form">
+              <button type="submit" class="danger-button">Revoke</button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <h2>Grant access</h2>
+    <form method="POST" action="/admin/permissions" class="stacked-form">
+      <label>User
+        <select name="user_id" required>
+          <option value="" disabled selected>Select a user</option>
+          <% users.forEach(function(u) { %>
+          <option value="<%= u.id %>"><%= u.username %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>Repo Group
+        <select name="repo_group_id" required>
+          <option value="" disabled selected>Select a repo group</option>
+          <% repoGroups.forEach(function(rg) { %>
+          <option value="<%= rg.id %>"><%= rg.org_name %> / <%= rg.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <button type="submit">Grant</button>
+    </form>
+  </main>
+<%- include('../partials/foot') %>

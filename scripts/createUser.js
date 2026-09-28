@@ -1,13 +1,13 @@
-// Bootstrap CLI for creating users. Exists because Phase 1 ships no admin UI
-// yet - Phase 2's User Maintenance screen (see ROADMAP.md) is expected to call
-// the same underlying create-user logic from a route instead of argv.
+// Bootstrap CLI for creating users. Still needed for the very first admin
+// (Phase 2's User Maintenance screen requires an admin to already be logged
+// in), and shares createUser logic with that screen via userService.js.
 //
 // Usage:
 //   node scripts/createUser.js --username=yp --password=secret123 --initials=YP [--admin]
 require('dotenv').config();
 
-const bcrypt = require('bcryptjs');
 const db = require('../app/lib/db');
+const { createUser } = require('../app/lib/userService');
 
 function parseArgs(argv) {
   const args = { admin: false };
@@ -33,13 +33,8 @@ async function main() {
     return;
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
-
   try {
-    await db.query(
-      'INSERT INTO users (username, password_hash, initials, is_admin) VALUES (?, ?, ?, ?)',
-      [username, passwordHash, initials, admin]
-    );
+    await createUser({ username, password, initials, isAdmin: admin });
     console.log(`Created user "${username}" (initials: ${initials}, admin: ${admin}).`);
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') {

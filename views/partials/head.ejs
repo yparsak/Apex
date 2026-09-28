@@ -10,6 +10,7 @@
     <div class="topnav-title">Apex</div>
     <div class="topnav-actions">
       <% if (typeof user !== 'undefined' && user) { %>
+        <% if (user.isAdmin) { %><a href="/admin/orgs">Admin</a><% } %>
         <span class="topnav-user"><%= user.username %></span>
         <form method="POST" action="/logout" class="inline-form">
           <button type="submit" class="link-button">Logout</button>

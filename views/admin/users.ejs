@@ -1,0 +1,38 @@
+<%- include('../partials/head', { title: 'Admin - Users', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'users' }) %>
+    <h1>Users</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <table class="admin-table">
+      <thead><tr><th>Username</th><th>Initials</th><th>Admin</th><th>Created</th></tr></thead>
+      <tbody>
+        <% users.forEach(function(u) { %>
+        <tr>
+          <td><%= u.username %></td>
+          <td>
+            <form method="POST" action="/admin/users/<%= u.id %>/initials" class="row-form">
+              <input type="text" name="initials" value="<%= u.initials %>" maxlength="10" required>
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="POST" action="/admin/users/<%= u.id %>/admin" class="row-form">
+              <input type="hidden" name="is_admin" value="<%= u.is_admin ? 'false' : 'true' %>">
+              <button type="submit"><%= u.is_admin ? 'Remove admin' : 'Make admin' %></button>
+            </form>
+          </td>
+          <td><%= u.created_at.toISOString().slice(0, 10) %></td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <h2>New user</h2>
+    <form method="POST" action="/admin/users" class="stacked-form">
+      <label>Username <input type="text" name="username" required></label>
+      <label>Password <input type="password" name="password" required></label>
+      <label>Initials <input type="text" name="initials" maxlength="10" required></label>
+      <label class="checkbox-label"><input type="checkbox" name="is_admin"> Admin</label>
+      <button type="submit">Create</button>
+    </form>
+  </main>
+<%- include('../partials/foot') %>

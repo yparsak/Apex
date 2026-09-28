@@ -1,0 +1,45 @@
+<%- include('../partials/head', { title: 'Admin - Repo Groups', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'repo-groups' }) %>
+    <h1>Repo Groups</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <table class="admin-table">
+      <thead><tr><th>Org</th><th>Name</th><th></th></tr></thead>
+      <tbody>
+        <% repoGroups.forEach(function(rg) { %>
+        <tr>
+          <td colspan="2">
+            <form method="POST" action="/admin/repo-groups/<%= rg.id %>/update" class="row-form">
+              <select name="org_id">
+                <% orgs.forEach(function(org) { %>
+                <option value="<%= org.id %>" <%= org.id === rg.org_id ? 'selected' : '' %>><%= org.name %></option>
+                <% }) %>
+              </select>
+              <input type="text" name="name" value="<%= rg.name %>" required>
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="POST" action="/admin/repo-groups/<%= rg.id %>/delete" class="row-form">
+              <button type="submit" class="danger-button">Delete</button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <h2>New repo group</h2>
+    <form method="POST" action="/admin/repo-groups" class="stacked-form">
+      <label>Org
+        <select name="org_id" required>
+          <option value="" disabled selected>Select an org</option>
+          <% orgs.forEach(function(org) { %>
+          <option value="<%= org.id %>"><%= org.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>Name <input type="text" name="name" required></label>
+      <button type="submit">Create</button>
+    </form>
+  </main>
+<%- include('../partials/foot') %>

@@ -1,0 +1,49 @@
+<%- include('../partials/head', { title: 'Admin - Repos', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'repos' }) %>
+    <h1>Repos</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <table class="admin-table">
+      <thead><tr><th>Repo Group</th><th>Name</th><th>Description</th><th>Default Branch</th><th></th></tr></thead>
+      <tbody>
+        <% repos.forEach(function(repo) { %>
+        <tr>
+          <td colspan="4">
+            <form method="POST" action="/admin/repos/<%= repo.id %>/update" class="row-form">
+              <select name="repo_group_id">
+                <% repoGroups.forEach(function(rg) { %>
+                <option value="<%= rg.id %>" <%= rg.id === repo.repo_group_id ? 'selected' : '' %>><%= rg.org_name %> / <%= rg.name %></option>
+                <% }) %>
+              </select>
+              <input type="text" name="name" value="<%= repo.name %>" required>
+              <input type="text" name="description" value="<%= repo.description || '' %>" placeholder="Description">
+              <input type="text" name="default_branch_name" value="<%= repo.default_branch_name %>" placeholder="main">
+              <button type="submit">Save</button>
+            </form>
+          </td>
+          <td>
+            <form method="POST" action="/admin/repos/<%= repo.id %>/delete" class="row-form">
+              <button type="submit" class="danger-button">Delete</button>
+            </form>
+          </td>
+        </tr>
+        <% }) %>
+      </tbody>
+    </table>
+    <h2>New repo</h2>
+    <form method="POST" action="/admin/repos" class="stacked-form">
+      <label>Repo Group
+        <select name="repo_group_id" required>
+          <option value="" disabled selected>Select a repo group</option>
+          <% repoGroups.forEach(function(rg) { %>
+          <option value="<%= rg.id %>"><%= rg.org_name %> / <%= rg.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>Name <input type="text" name="name" required></label>
+      <label>Description <input type="text" name="description"></label>
+      <label>Default branch <input type="text" name="default_branch_name" placeholder="main"></label>
+      <button type="submit">Create</button>
+    </form>
+  </main>
+<%- include('../partials/foot') %>
