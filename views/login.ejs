@@ -1,0 +1,17 @@
+<%- include('partials/head', { title: 'Login', user: null }) %>
+  <main class="login-page">
+    <h1>Log in</h1>
+    <% if (error) { %>
+      <p class="error"><%= error %></p>
+    <% } %>
+    <form method="POST" action="/login">
+      <label>Username
+        <input type="text" name="username" required autofocus>
+      </label>
+      <label>Password
+        <input type="password" name="password" required>
+      </label>
+      <button type="submit">Log in</button>
+    </form>
+  </main>
+<%- include('partials/foot') %>

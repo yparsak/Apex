@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title><%= title %> - Apex</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topnav">
+    <div class="topnav-title">Apex</div>
+    <div class="topnav-actions">
+      <% if (typeof user !== 'undefined' && user) { %>
+        <span class="topnav-user"><%= user.username %></span>
+        <form method="POST" action="/logout" class="inline-form">
+          <button type="submit" class="link-button">Logout</button>
+        </form>
+      <% } else { %>
+        <a href="/login">Login</a>
+      <% } %>
+    </div>
+  </header>
+  <div class="layout">
