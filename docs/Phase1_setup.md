@@ -25,7 +25,10 @@ make setup
 
 1. Create the `apex-net` network (if it doesn't already exist).
 2. Start a MariaDB 11 container (`apex-mariadb`), persisted to the `apex-mariadb-data`
-   volume.
+   volume. Not published to the host — the app reaches it over the `apex-net` network
+   by container name, so it can't collide with a MySQL/MariaDB already running on the
+   host. To poke at it directly: `docker exec -it apex-mariadb mariadb -uroot -p<root
+   password from .env> apex`.
 3. Apply [db/schema.sql](../db/schema.sql) — all tables, not just the ones Phase 1
    uses (see ROADMAP.md: the full data model is migrated up front).
 4. Install npm dependencies into `node_modules` on the host filesystem (bind-mounted
@@ -75,9 +78,9 @@ make clean     # also removes the data volume and the network - full reset
 - **"MariaDB is ready" never prints during `make setup`**: check
   `docker logs apex-mariadb` (or `podman logs ...`) — most often a stale container from
   a previous crashed run; `make clean` and retry.
-- **Port 3000 or 3306 already in use**: something else on the host (or a leftover
-  container) is bound to it. `docker ps` (or `podman ps`) to check for leftover
-  `apex-app` / `apex-mariadb` containers from a previous session.
+- **Port 3000 already in use**: something else on the host (or a leftover container)
+  is bound to it. `docker ps` (or `podman ps`) to check for a leftover `apex-app`
+  container from a previous session.
 - **`permission denied` on the Docker socket**: your user isn't in the `docker` group
   yet (see above) — don't work around it with `sudo make ...`, it'll leave root-owned
   files in the repo.

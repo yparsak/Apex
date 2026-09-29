@@ -35,7 +35,6 @@ db-up: network
 	  -e MARIADB_USER=$(DB_USER) \
 	  -e MARIADB_PASSWORD=$(DB_PASSWORD) \
 	  -e MARIADB_ROOT_PASSWORD=$(DB_ROOT_PASSWORD) \
-	  -p 127.0.0.1:3306:3306 \
 	  -v $(DB_VOLUME):/var/lib/mysql \
 	  $(DB_IMAGE)
 
