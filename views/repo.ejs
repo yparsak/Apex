@@ -1,0 +1,18 @@
+<%- include('partials/head', { title: repo.name, user: user }) %>
+  <aside class="sidebar">
+    <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
+  </aside>
+  <main class="content">
+    <p><a href="/"><%= org.name %> / <%= repoGroup.name %></a></p>
+    <h1><%= repo.name %></h1>
+    <% if (repo.description) { %><p><%= repo.description %></p><% } %>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <h2>Start new branch</h2>
+    <form method="POST" action="/repos/<%= repo.id %>/branches" class="stacked-form">
+      <label>CO number
+        <input type="text" name="co_number" placeholder="C12345678" pattern="C[0-9]{8}" required>
+      </label>
+      <button type="submit">Create branch from <%= repo.default_branch_name %></button>
+    </form>
+  </main>
+<%- include('partials/foot') %>

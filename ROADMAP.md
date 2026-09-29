@@ -87,6 +87,20 @@ browser.
 - Pipeline lock acquisition: one AI session at a time per `(repo_id, co_number)`,
   covering the full pipeline (clone → sandbox build/test → push), not just the push.
 
+**Implementation notes (decisions made while building this phase):**
+- `orgs.name` is used as the literal GitHub owner/org login for API calls
+  (`owner/repo` = `${org.name}/${repo.name}`) — there's no separate "GitHub org" field,
+  consistent with the one-org-wide-installation model from Phase 3.
+- Collaborators and last-updated aren't stored anywhere — both are fetched live from
+  GitHub on every dashboard render (`app/lib/github/repoEnrichment.js`) and degrade to
+  `—` on any failure (missing creds, or this App's `contents:write`-only scope lacking
+  permission for the collaborators endpoint), rather than breaking the page.
+- `pipeline_locks.session_id` is a required FK, so lock acquisition needed a `sessions`
+  row to already exist — creating/continuing a branch now calls a shared
+  `findOrCreateSession` (`app/lib/sessionService.js`) before `acquireLock`
+  (`app/lib/lockService.js`). The lock is **not released** in this phase — there's no
+  pipeline run yet to complete or fail; release is a later-phase (worker) concern.
+
 ## Phase 5 — Clarification loop
 
 - LLM-driven Q&A against repo context, written to `audit_log`.

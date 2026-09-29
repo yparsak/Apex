@@ -1,6 +1,30 @@
 <%- include('partials/head', { title: 'Dashboard', user: user }) %>
   <aside class="sidebar"></aside>
   <main class="content">
-    <p class="placeholder">Repo groups and repos show up here starting in Phase 4.</p>
+    <% if (!repoGroups.length) { %>
+      <p class="placeholder">You don't have access to any repo groups yet. Contact an admin.</p>
+    <% } else { %>
+      <nav class="tabs">
+        <% repoGroups.forEach(function(g) { %>
+          <a class="tab <%= selectedGroup && selectedGroup.id === g.id ? 'active' : '' %>" href="/?group=<%= g.id %>"><%= g.org_name %> / <%= g.name %></a>
+        <% }) %>
+      </nav>
+      <% if (!repos.length) { %>
+        <p class="placeholder">No repos in this group yet.</p>
+      <% } else { %>
+        <div class="repo-list">
+          <% repos.forEach(function(repo) { %>
+            <a class="repo-card" href="/repos/<%= repo.id %>">
+              <div class="repo-card-name"><%= repo.name %></div>
+              <div class="repo-card-desc"><%= repo.description || '' %></div>
+              <div class="repo-card-meta">
+                <span><%= repo.collaboratorLogins.length ? repo.collaboratorLogins.join(', ') : '—' %></span>
+                <span><%= repo.updatedLabel ? ('updated ' + repo.updatedLabel) : '—' %></span>
+              </div>
+            </a>
+          <% }) %>
+        </div>
+      <% } %>
+    <% } %>
   </main>
 <%- include('partials/foot') %>

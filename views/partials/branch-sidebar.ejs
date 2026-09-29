@@ -1,0 +1,16 @@
+<h3>Active branches</h3>
+<% if (!branches.length) { %>
+  <p class="placeholder">No active branches yet.</p>
+<% } else { %>
+  <ul class="branch-list">
+    <% branches.forEach(function(b) { %>
+      <li class="branch-list-item">
+        <div class="branch-name"><%= b.branch_name %></div>
+        <div class="branch-co">CO <%= b.co_number %></div>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/continue">
+          <button type="submit" class="link-button">Continue</button>
+        </form>
+      </li>
+    <% }) %>
+  </ul>
+<% } %>

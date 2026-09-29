@@ -1,0 +1,16 @@
+<%- include('partials/head', { title: branch.branch_name, user: user }) %>
+  <aside class="sidebar">
+    <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
+  </aside>
+  <main class="content">
+    <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
+    <h1><%= branch.branch_name %></h1>
+    <p>CO <%= branch.co_number %></p>
+    <% if (lockHeld) { %>
+      <p class="lock-ok">You hold the pipeline lock for this CO on this repo.</p>
+    <% } else { %>
+      <p class="lock-warn">This CO is currently locked by another in-progress session on this repo — a new AI run can't start until that finishes.</p>
+    <% } %>
+    <p class="placeholder">Clarification loop starts in Phase 5.</p>
+  </main>
+<%- include('partials/foot') %>
