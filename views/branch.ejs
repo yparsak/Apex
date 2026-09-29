@@ -11,6 +11,64 @@
     <% } else { %>
       <p class="lock-warn">This CO is currently locked by another in-progress session on this repo — a new AI run can't start until that finishes.</p>
     <% } %>
-    <p class="placeholder">Clarification loop starts in Phase 5.</p>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+
+    <% if (requirements.length) { %>
+      <h2>Requirements</h2>
+      <ul class="requirement-list">
+        <% requirements.forEach(function(r) { %>
+          <li class="requirement-item requirement-<%= r.confirm_status %>">
+            <span class="requirement-status"><%= r.confirm_status.replace('_', ' ') %></span>
+            <span class="requirement-text"><%= r.requirement_text %></span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+
+    <% if (pendingRequirement) { %>
+      <div class="overlap-banner">
+        <p>
+          <strong>Possible overlap detected.</strong> This requirement may already be
+          implemented on this branch<% if (overlapRequirement) { %>, matching a previously
+          confirmed requirement:<% } else { %>.<% } %>
+        </p>
+        <p class="requirement-text"><%= pendingRequirement.requirement_text %></p>
+        <% if (overlapRequirement) { %>
+          <p class="placeholder">Matches: "<%= overlapRequirement.requirement_text %>"</p>
+        <% } %>
+        <div class="overlap-actions">
+          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/confirm" class="inline-form">
+            <button type="submit">Confirm &amp; proceed anyway</button>
+          </form>
+          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/skip" class="inline-form">
+            <button type="submit" class="danger-button">Skip — already done</button>
+          </form>
+        </div>
+      </div>
+    <% } %>
+
+    <h2>Clarification</h2>
+    <div class="conversation">
+      <% if (!conversation.length) { %>
+        <p class="placeholder">Describe what you need built for this CO to start the clarification loop.</p>
+      <% } %>
+      <% conversation.forEach(function(m) { %>
+        <div class="message message-<%= m.role %>">
+          <div class="message-role"><%= m.role === 'user' ? user.username : 'Apex' %></div>
+          <div class="message-text"><%= m.content %></div>
+        </div>
+      <% }) %>
+    </div>
+
+    <% if (!pendingRequirement) { %>
+      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
+        <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
+          <textarea name="text" rows="4" required></textarea>
+        </label>
+        <button type="submit">Send</button>
+      </form>
+    <% } else { %>
+      <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
+    <% } %>
   </main>
 <%- include('partials/foot') %>

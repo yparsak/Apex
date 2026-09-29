@@ -50,4 +50,52 @@ async function createBranchRef(owner, repo, ref, sha) {
   return res.json();
 }
 
-module.exports = { getRepo, listCollaborators, getBranch, createBranchRef };
+// getTree(owner, repo, ref) -> array of blob paths, recursive. Used for
+// Phase 5's up-front context retrieval (see notes.md / ROADMAP.md Phase 5) -
+// paths only, never bulk file contents, so it scales to large repos.
+async function getTree(owner, repo, ref) {
+  const branch = await getBranch(owner, repo, ref);
+  if (!branch) return [];
+  const res = await githubRequest('GET', `/repos/${owner}/${repo}/git/trees/${branch.commit.sha}?recursive=1`);
+  if (!res.ok) throw new Error(`GitHub getTree ${owner}/${repo}@${ref} failed: HTTP ${res.status}`);
+  const data = await res.json();
+  return (data.tree || []).filter((entry) => entry.type === 'blob').map((entry) => entry.path);
+}
+
+// getFileContent(owner, repo, path, ref) -> decoded file text, or null if the
+// path doesn't exist at ref. Fetched on demand, one path at a time, per the
+// LLM's own FETCH_FILE requests (see clarificationService.js).
+async function getFileContent(owner, repo, path, ref) {
+  const res = await githubRequest(
+    'GET',
+    `/repos/${owner}/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(ref)}`
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GitHub getFileContent ${owner}/${repo}/${path}@${ref} failed: HTTP ${res.status}`);
+  const data = await res.json();
+  if (Array.isArray(data) || data.type !== 'file') return null; // path is a directory, not a file
+  return Buffer.from(data.content, data.encoding || 'base64').toString('utf8');
+}
+
+// compareCommits(owner, repo, base, head) -> { files: [{ filename, patch }] }.
+// Used by overlapService.js to see what's already landed on the DEV branch
+// vs. the repo's default branch.
+async function compareCommits(owner, repo, base, head) {
+  const res = await githubRequest(
+    'GET',
+    `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`
+  );
+  if (!res.ok) throw new Error(`GitHub compareCommits ${owner}/${repo} ${base}...${head} failed: HTTP ${res.status}`);
+  const data = await res.json();
+  return { files: (data.files || []).map((f) => ({ filename: f.filename, patch: f.patch || null })) };
+}
+
+module.exports = {
+  getRepo,
+  listCollaborators,
+  getBranch,
+  createBranchRef,
+  getTree,
+  getFileContent,
+  compareCommits,
+};

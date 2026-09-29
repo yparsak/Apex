@@ -114,7 +114,28 @@ browser.
   (`overlap_flag_requirement_id`), pausing until the submitting user confirms or
   overrides — never auto-skip.
 
-## Phase 6 — Sandboxed execution
+## Phase 6 — Repo clarification instructions
+
+- Admin-maintained, per-repo instructions doc (`repo_clarification_instructions`, one
+  row per `repo_id`) — free-text guidance (conventions, boundaries, what's off-limits)
+  that applies to every branch and CO on that repo, not scoped to any one session.
+- Deliberately a separate table from `repo_documents`: that table holds Apex-generated
+  output (requirements log, spec doc) that automated jobs are allowed to overwrite; this
+  is admin-authored input that must never be touched by anything but the admin who wrote
+  it.
+- Admin CRUD (create/update/delete), alongside the existing Orgs/Repo Groups/Repos/
+  Permissions screens from Phase 2, gated by `requireAdmin`; every mutation written to
+  `admin_audit_log` like the rest of that admin surface.
+- Capped at 6,000 characters, enforced at save time with a rejected-and-explained error
+  — never silently truncated. It's re-sent in full on every clarification turn (see
+  Phase 5), so an unbounded doc would compete for context against the file tree, the
+  growing conversation history, and any `FETCH_FILE`-fetched file contents.
+- Injected into `clarificationService.js`'s system prompt on every turn, labeled as
+  authoritative admin guidance — distinct from the file-tree/`FETCH_FILE` path a repo's
+  actual files go through. Not fed into `overlapService.js`'s overlap check, which stays
+  scoped to the diff plus prior requirements text.
+
+## Phase 7 — Sandboxed execution
 
 - Ephemeral Docker container per session, driven by each repo's declarative
   `apex.pipeline.json` (`buildCommand`/`testCommand`/`image`) — the runner never
@@ -133,13 +154,13 @@ browser.
   from the browser session; completion surfaces next time the user views that repo's
   branch list.
 - **Container lifecycle on failure:** a container that fails is *not* torn down
-  immediately — it's kept alive (see Phase 8's resume-from-step retry) until the
+  immediately — it's kept alive (see Phase 9's resume-from-step retry) until the
   session either succeeds, exhausts its resume-attempt limit, or is explicitly
   abandoned. Only then is it destroyed. (Idle/abandoned-but-never-retried containers
   still need an eventual timeout-based cleanup; not decided yet — flagged under
   Open/future.)
 
-## Phase 7 — DEV branch delivery
+## Phase 8 — DEV branch delivery
 
 - Combined commit to the DEV branch is code-only — no doc files committed (see below).
 - `repo_documents`: DB-stored requirements log (cumulative per repo, one heading per
@@ -168,13 +189,13 @@ browser.
   `UPDATE ... WHERE status = 'failed'`) as a full from-scratch re-run (codegen, sandbox
   build/test, push) — nothing from the failed `pipeline_runs` row is reused.
 
-## Phase 8 — Session progress indicator
+## Phase 9 — Session progress indicator
 
 Not in notes.md's original scope; added because a coarse `sessions.status` enum makes
 it hard to tell where a session actually is or which step an error happened in. Placed
 here because it's the first point every state/sub-state it needs to display actually
 exists (clarifying from Phase 5; approval/queued/running/completed/failed from Phase
-7).
+8).
 
 - Schema addition: `pipeline_runs.stage` (`cloning`/`codegen`/`building`/`testing`/
   `pushing`), updated by `worker.js` as it progresses through each step and persisted
@@ -186,16 +207,16 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
 - Sub-stepper: when status is `running` or `failed`, expands to show clone → codegen →
   build → test → push using the latest `pipeline_runs.stage`, so a failure is
   traceable to the exact step without opening the build/test log first.
-- **Retry, resuming from the failed step** (not the from-scratch retry Phase 7
+- **Retry, resuming from the failed step** (not the from-scratch retry Phase 8
   already has — this is new behavior, surfaced directly on the sub-stepper next to the
   failed step):
-  - Reuses the kept-alive container (see Phase 6) and whatever the last successfully
+  - Reuses the kept-alive container (see Phase 7) and whatever the last successfully
     completed step produced — e.g. if push failed, retry re-attempts only the push,
     reusing the already-built/tested commit; codegen/build/test are not redone.
   - `pipeline_runs.resume_attempt_count`, capped at **3**. Each resume-from-step click
     increments it.
   - On exhausting 3 resume attempts at the same step, the kept-alive container is torn
-    down and the resume option is disabled — the session falls back to Phase 7's
+    down and the resume option is disabled — the session falls back to Phase 8's
     existing full-session retry (fresh container, full from-scratch re-run) rather
     than dead-ending the user.
   - Not yet decided: whether a resumed attempt re-validates that the DEV branch head
@@ -204,7 +225,7 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
     that check for simplicity. Flagged under Open/future — revisit before building
     this if it matters in practice.
 
-## Phase 9 — Observability & hardening
+## Phase 10 — Observability & hardening
 
 - Blocked-allowlist alerts: `blocked_allowlist_alerts` table +
   `GET /api/admin/alerts`, a real queried surface, not write-only. "403 means allowlist
@@ -227,14 +248,14 @@ Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a 
   collisions.
 - **Richer per-repo pipeline config format** — `apex.pipeline.json` stays plain JSON
   unless a real need for something richer emerges.
-- **Idle/abandoned kept-alive containers** — Phase 6 keeps a failed container alive
+- **Idle/abandoned kept-alive containers** — Phase 7 keeps a failed container alive
   for resume-from-step retry, torn down on success, resume-limit exhaustion, or
   explicit abandonment. There's no timeout-based cleanup for a container that's simply
   never retried and never explicitly abandoned; not decided yet.
-- **Branch-head staleness check on resume-from-step retry** — whether a Phase 8 resume
+- **Branch-head staleness check on resume-from-step retry** — whether a Phase 9 resume
   attempt re-validates the DEV branch hasn't moved (via a direct push from another
   engineer) since the last successfully completed step before trusting cached state.
-- **Spec/Communication Protocol cron interval** — Phase 7 decouples doc regeneration
+- **Spec/Communication Protocol cron interval** — Phase 8 decouples doc regeneration
   from `worker.js` into a separate cron-scheduled script; the actual interval (and
   whether it's a host cron/systemd timer vs. something container-native) isn't decided
   yet, since it depends on the deployment target (also still undecided — see "Stack

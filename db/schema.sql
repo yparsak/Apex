@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS branches (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
--- Phase 5 / Phase 6 / Phase 7: sessions, requirements, pipeline execution
+-- Phase 5 / Phase 7 / Phase 8: sessions, requirements, pipeline execution
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -161,8 +161,8 @@ CREATE TABLE IF NOT EXISTS pipeline_locks (
   CONSTRAINT fk_pipeline_locks_session FOREIGN KEY (session_id) REFERENCES sessions (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- pipeline_runs.stage / resume_attempt_count support the Phase 8 progress
--- indicator and resume-from-failed-step retry (see ROADMAP.md Phase 6/Phase 8).
+-- pipeline_runs.stage / resume_attempt_count support the Phase 9 progress
+-- indicator and resume-from-failed-step retry (see ROADMAP.md Phase 7/Phase 9).
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   session_id INT UNSIGNED NOT NULL,
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
--- Phase 9: observability
+-- Phase 10: observability
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS blocked_allowlist_alerts (
@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS lock_contention_events (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
--- Phase 7: delivery docs
+-- Phase 8: delivery docs
 -- ---------------------------------------------------------------------------
 
 -- co_number = '' is the sentinel for the repo-level (not per-CO) document.
