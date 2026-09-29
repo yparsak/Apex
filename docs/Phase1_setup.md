@@ -1,9 +1,18 @@
 # Phase 1 setup
 
-Apex's local dev environment runs entirely through [podman](https://podman.io/)
-containers — there is no Node.js or MariaDB installed on the host, and none is
-required. `podman machine` must already be running (`podman machine list` should show
-a `Currently running` VM); this is a one-time setup on a new machine, not covered here.
+Apex's dev/deploy environment runs entirely through containers — there is no Node.js or
+MariaDB installed on the host, and none is required. The `Makefile` defaults to
+[Docker](https://docs.docker.com/), overridable with `make <target> RUNTIME=podman` if
+you'd rather use [Podman](https://podman.io/) (e.g. on macOS).
+
+- **Docker on Linux (e.g. a Raspberry Pi):** the daemon must be running
+  (`sudo systemctl enable --now docker`), and your user must be in the `docker` group
+  (`sudo usermod -aG docker $USER`, then log out/in) so `make` doesn't need `sudo` —
+  running it under `sudo` would make root, not you, own bind-mounted files like
+  `node_modules`.
+- **Podman:** `podman machine` must already be running on macOS
+  (`podman machine list` should show a `Currently running` VM); not needed on Linux,
+  where Podman talks to the kernel directly.
 
 ## First-time setup
 
@@ -14,7 +23,7 @@ make setup
 
 `make setup` will:
 
-1. Create the `apex-net` podman network (if it doesn't already exist).
+1. Create the `apex-net` network (if it doesn't already exist).
 2. Start a MariaDB 11 container (`apex-mariadb`), persisted to the `apex-mariadb-data`
    volume.
 3. Apply [db/schema.sql](../db/schema.sql) — all tables, not just the ones Phase 1
@@ -28,14 +37,15 @@ already exist and just re-applies the schema and dependencies.
 
 ## Bootstrap an admin user
 
-Phase 1 ships no admin UI yet (that's Phase 2), so the very first user has to be
-created from the command line:
+The Phase 2 admin UI needs an admin to already be logged in, so the very first user has
+to be created from the command line:
 
 ```
 make create-admin ARGS='--username=yourname --password=yourpassword --initials=XX --admin'
 ```
 
-`initials` is what later phases use for branch naming (`dev/{initials}-{CO}-{n}`).
+`initials` is what later phases use for branch naming (`dev/{initials}-{CO}-{n}`). Once
+this user exists, use `/admin` in the browser to create everyone else.
 
 ## Run the app
 
@@ -63,8 +73,11 @@ make clean     # also removes the data volume and the network - full reset
 ## Troubleshooting
 
 - **"MariaDB is ready" never prints during `make setup`**: check
-  `podman logs apex-mariadb` — most often a stale container from a previous crashed
-  run; `make clean` and retry.
+  `docker logs apex-mariadb` (or `podman logs ...`) — most often a stale container from
+  a previous crashed run; `make clean` and retry.
 - **Port 3000 or 3306 already in use**: something else on the host (or a leftover
-  container) is bound to it. `podman ps` to check for leftover `apex-app` /
-  `apex-mariadb` containers from a previous session.
+  container) is bound to it. `docker ps` (or `podman ps`) to check for leftover
+  `apex-app` / `apex-mariadb` containers from a previous session.
+- **`permission denied` on the Docker socket**: your user isn't in the `docker` group
+  yet (see above) — don't work around it with `sudo make ...`, it'll leave root-owned
+  files in the repo.
