@@ -135,9 +135,16 @@ browser.
   fact, so we skip straight to the corrected version.
 - Documents UI: per-repo view plus a global, CO-scoped cross-repo search ("every
   delivery doc for this CO, across every repo I can access").
-- Spec/Communication Protocol doc regeneration: trunk-staleness-driven background job
-  (`specDocScanService.js`, `specDocJobService.js`, `specDocService.js`), fed by the
-  `spec_doc_jobs` queue, regenerated whenever trunk moves.
+- Spec/Communication Protocol doc regeneration is decoupled from `worker.js`'s
+  AI-pipeline poll loop: `specDocScanService.js` (trunk-staleness check) and
+  `specDocService.js` (generation) are triggered by a separate, cron-scheduled script
+  — not drained inline by `worker.js` — that scans for staleness and drains whatever
+  lands in `spec_doc_jobs` each run. This bounds doc freshness to the cron interval
+  rather than to `worker.js`'s session-processing cadence, so a backlog of queued AI
+  sessions can't delay doc regeneration, or vice versa. Exact interval TBD at
+  implementation time (see Open/future).
+  Requirements log generation is unaffected by this: it stays synchronous, per-CO,
+  updated inline when a session completes — no queue, no cron.
 - **Approve & Implement** human gate: a session becomes eligible for worker pickup only
   after this explicit click. Offered once every submitted requirement has resolved out
   of `pending_confirm`. New instructions or a fresh overlap check reopening a
@@ -213,6 +220,11 @@ Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a 
 - **Branch-head staleness check on resume-from-step retry** — whether a Phase 8 resume
   attempt re-validates the DEV branch hasn't moved (via a direct push from another
   engineer) since the last successfully completed step before trusting cached state.
+- **Spec/Communication Protocol cron interval** — Phase 7 decouples doc regeneration
+  from `worker.js` into a separate cron-scheduled script; the actual interval (and
+  whether it's a host cron/systemd timer vs. something container-native) isn't decided
+  yet, since it depends on the deployment target (also still undecided — see "Stack
+  decisions").
 
 ## Accepted risks
 
