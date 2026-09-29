@@ -1,16 +1,25 @@
 RUNTIME ?= docker
 
+# .env is the single source of truth for DB credentials and the app port - both
+# the Node app and this Makefile read the same file, so they can't drift out of
+# sync with each other. -include tolerates a missing .env (e.g. before the
+# first `cp .env.example .env`), falling back to the ?= defaults below.
+# Caveat: this file is parsed by Make (via include), Docker (--env-file), and
+# Node (dotenv) - keep values unquoted, and avoid literal `$` in any value,
+# since Make treats it as a variable reference.
+-include .env
+
 NETWORK := apex-net
 DB_CONTAINER := apex-mariadb
 DB_VOLUME := apex-mariadb-data
 DB_IMAGE := docker.io/library/mariadb:11
-DB_NAME := apex
-DB_USER := apex
-DB_PASSWORD := apex_dev_password
-DB_ROOT_PASSWORD := apex_dev_root_password
+DB_NAME ?= apex
+DB_USER ?= apex
+DB_PASSWORD ?= apex_dev_password
+DB_ROOT_PASSWORD ?= apex_dev_root_password
 
 APP_CONTAINER := apex-app
-APP_PORT := 3000
+PORT ?= 3000
 NODE_IMAGE := docker.io/library/node:22-slim
 
 # Runs npm/node as the invoking host user, not container root - matters on a
@@ -57,9 +66,9 @@ create-admin: db-up
 dev: db-up
 	@$(RUNTIME) rm -f $(APP_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) run -d --name $(APP_CONTAINER) --network $(NETWORK) \
-	  -v "$(CURDIR)":/app -w /app -p $(APP_PORT):$(APP_PORT) $(RUN_AS_HOST_USER) --env-file .env \
+	  -v "$(CURDIR)":/app -w /app -p $(PORT):$(PORT) $(RUN_AS_HOST_USER) --env-file .env \
 	  $(NODE_IMAGE) npx nodemon app.js
-	@echo "Apex starting at http://localhost:$(APP_PORT) (container: $(APP_CONTAINER))"
+	@echo "Apex starting at http://localhost:$(PORT) (container: $(APP_CONTAINER))"
 
 logs:
 	$(RUNTIME) logs -f $(APP_CONTAINER)
