@@ -81,6 +81,18 @@ make clean     # also removes the data volume and the network - full reset
 - **Port 3000 already in use**: something else on the host (or a leftover container)
   is bound to it. `docker ps` (or `podman ps`) to check for a leftover `apex-app`
   container from a previous session.
+- **`Access denied for user 'root'@'localhost' (using password: YES)`**: the MySQL/
+  MariaDB client treats the hostname `localhost` specially — it connects over the local
+  Unix socket instead of TCP, and `root@'localhost'` on that socket can end up on a
+  different auth method (e.g. `unix_socket`/`auth_socket`, which ignores passwords
+  entirely) than `root@'127.0.0.1'`/`root@'%'` over TCP, which is what
+  `MARIADB_ROOT_PASSWORD` actually configures. `db-wait` and `migrate` force TCP with
+  `-h127.0.0.1` for exactly this reason — if you're running raw `docker exec ... mariadb`
+  commands by hand, add `-h127.0.0.1` too rather than leaving the host unset.
+  (A separate but similarly-shaped issue: if `apex-mariadb-data` already has an
+  initialized data directory from an earlier attempt, `MARIADB_ROOT_PASSWORD` is only
+  applied the first time a volume initializes — `docker rm -f apex-mariadb && docker
+  volume rm apex-mariadb-data` to force a clean re-init if you suspect that.)
 - **`permission denied` on the Docker socket**: your user isn't in the `docker` group
   yet (see above) — don't work around it with `sudo make ...`, it'll leave root-owned
   files in the repo.

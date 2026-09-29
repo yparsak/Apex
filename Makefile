@@ -40,11 +40,11 @@ db-up: network
 
 db-wait:
 	@echo "Waiting for MariaDB..."
-	@until $(RUNTIME) exec $(DB_CONTAINER) mariadb-admin ping -uroot -p$(DB_ROOT_PASSWORD) --silent 2>/dev/null; do sleep 1; done
+	@until $(RUNTIME) exec $(DB_CONTAINER) mariadb-admin ping -h127.0.0.1 -uroot -p$(DB_ROOT_PASSWORD) --silent 2>/dev/null; do sleep 1; done
 	@echo "MariaDB is ready."
 
 migrate:
-	cat db/schema.sql | $(RUNTIME) exec -i $(DB_CONTAINER) mariadb -uroot -p$(DB_ROOT_PASSWORD) $(DB_NAME)
+	cat db/schema.sql | $(RUNTIME) exec -i $(DB_CONTAINER) mariadb -h127.0.0.1 -uroot -p$(DB_ROOT_PASSWORD) $(DB_NAME)
 
 install:
 	$(RUNTIME) run --rm -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) $(NODE_IMAGE) npm install
