@@ -11,6 +11,7 @@ const githubApi = require('./github/githubApi');
 const modelAdapter = require('./model/modelAdapter');
 const overlapService = require('./overlapService');
 const auditLog = require('./auditLog');
+const repoClarificationInstructions = require('./repoClarificationInstructions');
 
 const MAX_FILE_FETCHES = 5;
 const MAX_TREE_PATHS = 500;
@@ -51,10 +52,16 @@ async function getConversation(sessionId) {
   return rows;
 }
 
-function toModelMessages(tree, conversation) {
+function toModelMessages(tree, conversation, instructions) {
   const treeBlock = tree.length ? tree.join('\n') : '(tree unavailable)';
+  // Admin-authored guidance is a separate block from the file tree/FETCH_FILE
+  // path - it's authoritative instruction, not repo content the model asked
+  // for (see ROADMAP.md Phase 6).
+  const instructionsBlock = instructions
+    ? `\n\n=== ADMIN CLARIFICATION INSTRUCTIONS (authoritative) ===\n${instructions}`
+    : '';
   return [
-    { role: 'system', content: `${SYSTEM_PROMPT}\n\n=== FILE TREE ===\n${treeBlock}` },
+    { role: 'system', content: `${SYSTEM_PROMPT}\n\n=== FILE TREE ===\n${treeBlock}${instructionsBlock}` },
     ...conversation.map((row) => ({ role: row.role, content: row.content })),
   ];
 }
@@ -131,8 +138,12 @@ async function submitMessage({ session, branch, org, repo, user, text }) {
   await db.query("INSERT INTO conversations (session_id, role, content) VALUES (?, 'user', ?)", [session.id, text]);
   await auditLog.logAction({ sessionId: session.id, userId: user.id, action: 'clarification_message', detail: text });
 
-  const [tree, conversation] = await Promise.all([fetchRepoTree(org, repo, branch), getConversation(session.id)]);
-  const messages = toModelMessages(tree, conversation);
+  const [tree, conversation, instructions] = await Promise.all([
+    fetchRepoTree(org, repo, branch),
+    getConversation(session.id),
+    repoClarificationInstructions.getInstructions(repo.id),
+  ]);
+  const messages = toModelMessages(tree, conversation, instructions);
 
   const result = await runModelLoop(messages, org, repo, branch);
 

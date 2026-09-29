@@ -1,0 +1,23 @@
+<%- include('../partials/head', { title: 'Admin - Clarification Instructions', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'clarification-instructions' }) %>
+    <h1>Repo Clarification Instructions</h1>
+    <p>
+      Free-text guidance (conventions, boundaries, what's off-limits) sent to the clarification
+      assistant on every turn for every branch and CO on a repo. Capped at <%= maxLength %> characters.
+    </p>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <% repos.forEach(function(repo) { %>
+    <h2><%= repo.org_name %> / <%= repo.repo_group_name %> / <%= repo.name %></h2>
+    <form method="POST" action="/admin/repo-clarification-instructions/<%= repo.id %>" class="stacked-form instructions-form">
+      <textarea name="instructions" rows="6" maxlength="<%= maxLength %>" placeholder="Conventions, boundaries, what's off-limits&hellip;"><%= repo.instructions || '' %></textarea>
+      <button type="submit">Save</button>
+    </form>
+    <% if (repo.instructions) { %>
+    <form method="POST" action="/admin/repo-clarification-instructions/<%= repo.id %>/delete" class="row-form">
+      <button type="submit" class="danger-button">Delete</button>
+    </form>
+    <% } %>
+    <% }) %>
+  </main>
+<%- include('../partials/foot') %>

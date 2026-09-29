@@ -163,6 +163,10 @@ body {
   font-size: 0.9rem;
 }
 
+.instructions-form {
+  max-width: 640px;
+}
+
 .checkbox-label {
   flex-direction: row !important;
   align-items: center;

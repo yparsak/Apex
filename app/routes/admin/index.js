@@ -12,5 +12,6 @@ router.use('/repo-groups', require('./repoGroups'));
 router.use('/repos', require('./repos'));
 router.use('/users', require('./users'));
 router.use('/permissions', require('./permissions'));
+router.use('/repo-clarification-instructions', require('./repoClarificationInstructions'));
 
 module.exports = router;

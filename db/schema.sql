@@ -182,6 +182,25 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
+-- Phase 6: admin-authored per-repo clarification instructions. Deliberately a
+-- separate table from repo_documents - that one holds Apex-generated output
+-- automated jobs may overwrite; this is admin-authored input nothing but the
+-- admin CRUD screen may touch. instructions is capped at 6,000 chars, enforced
+-- app-side at save time (see ROADMAP.md Phase 6).
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS repo_clarification_instructions (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  repo_id INT UNSIGNED NOT NULL,
+  instructions TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_repo_clarification_instructions_repo (repo_id),
+  CONSTRAINT fk_repo_clarification_instructions_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
 -- Phase 2: admin
 -- ---------------------------------------------------------------------------
 
