@@ -16,11 +16,20 @@ function sleep(ms) {
 // than concurrently across different (repo, CO) pairs, is a scale limitation
 // accepted for now - nothing in this phase requires more.
 async function pollOnce() {
-  const [[next]] = await db.query("SELECT id FROM sessions WHERE status = 'queued' ORDER BY id ASC LIMIT 1");
+  const [[next]] = await db.query("SELECT id, resume_requested FROM sessions WHERE status = 'queued' ORDER BY id ASC LIMIT 1");
   if (!next) return false;
 
-  console.log(`[worker] running pipeline for session ${next.id}`);
-  await pipelineRunner.run(next.id);
+  // resume_requested (see ROADMAP.md Phase 9) distinguishes a resume-from-
+  // failed-step click from a normal approval/full-retry - both just leave
+  // the session 'queued', so this flag is the only signal worker.js has for
+  // which of pipelineRunner's two entry points to call.
+  if (next.resume_requested) {
+    console.log(`[worker] resuming pipeline for session ${next.id}`);
+    await pipelineRunner.resume(next.id);
+  } else {
+    console.log(`[worker] running pipeline for session ${next.id}`);
+    await pipelineRunner.run(next.id);
+  }
   console.log(`[worker] finished session ${next.id}`);
   return true;
 }

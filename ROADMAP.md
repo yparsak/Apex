@@ -322,6 +322,46 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
     that check for simplicity. Flagged under Open/future — revisit before building
     this if it matters in practice.
 
+**Implementation notes (decisions made while building this phase):**
+- **`pipeline_runs.stage`/`resume_attempt_count` needed no schema work** - both were
+  already part of Phase 1's upfront migration, and `stage` was already being written by
+  `pipelineRunner.js` since Phase 7. The only new column this phase needed was
+  `sessions.resume_requested` (idempotent `ALTER ... ADD COLUMN IF NOT EXISTS`, same
+  pattern as Phase 7/8's additions to `pipeline_runs`) - see below for why.
+- **`resume_requested` disambiguates two routes that both just leave a session
+  `queued`**: Phase 8's full-retry (`/retry`) and this phase's resume-from-step
+  (`/resume`) both set `sessions.status = 'queued'`, since that's what `worker.js`
+  polls for. `resume_requested` is the only signal it has for which of
+  `pipelineRunner.run()` / `.resume()` to call; both entry points clear the flag the
+  moment they pick the session up, so it can never leak into a later, unrelated queue.
+- **`pipelineRunner.js` was refactored into per-step functions** (`cloneStep`,
+  `codegenStep`, `buildStep`, `testStep`, `finishSuccessfully`) shared by `run()` and
+  the new `resume()`, rather than duplicating the clone/build/test/push exec calls in a
+  second function. `resume()` dispatches on the failed run's stored `stage` and calls
+  only the steps from there onward.
+- **`resume_attempt_count` is one flat counter per `pipeline_runs` row, not
+  per-step** - the schema has a single column, not one per stage, so "capped at 3" is
+  implemented as 3 resume attempts total for that failed run, regardless of whether a
+  later attempt fails at a different (later) step than the one before it. A stricter
+  per-step reset would need a second column to track "which step is this count for,"
+  which the roadmap doesn't call for explicitly.
+- **Resuming into codegen resets the working tree first**: `git checkout -- .` +
+  `git clean -fd` run inside the container before `codegenStep` is called again. This
+  discards any partial `WRITE_FILE`s the earlier failed attempt left behind. Without
+  it, a resumed codegen run's `FETCH_FILE` (which starts with an empty in-memory write
+  map every call - see `codegenService.js`) would read stale GitHub content for a path
+  the failed attempt had already modified in the container, instead of the container's
+  actual current file.
+- **Branch-head staleness re-validation on resume was left unbuilt**, per the "Not yet
+  decided" note above - `resume()` doesn't re-check whether another engineer pushed to
+  the branch between the original failure and the resume click. This is the default
+  the roadmap describes ("skips that check for simplicity"), not an oversight.
+- **Stepper view-model lives in its own module** (`app/lib/pipelineStepper.js`), pure
+  computation with no DB/HTTP access, so the step-derivation rules (which
+  `sessions.status`/`pending_confirm`/`pipeline_runs.stage` combination maps to which
+  visual state) are easy to read and change in one place independent of the route
+  handler that fetches the data.
+
 ## Phase 10 — Observability & hardening
 
 - Blocked-allowlist alerts: `blocked_allowlist_alerts` table +

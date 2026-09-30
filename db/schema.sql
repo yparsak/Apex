@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id INT UNSIGNED NOT NULL,
   status ENUM('awaiting_approval', 'queued', 'running', 'completed', 'failed') NOT NULL DEFAULT 'awaiting_approval',
   approved_at TIMESTAMP NULL,
+  -- resume_requested: set when 'queued' via the Phase 9 resume-from-failed-
+  -- step action rather than a normal approval/full retry - the only signal
+  -- worker.js has for which pipelineRunner entry point (run vs. resume) to
+  -- call, since both leave the session in the same 'queued' status.
+  resume_requested BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -109,6 +114,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   CONSTRAINT fk_sessions_branch FOREIGN KEY (branch_id) REFERENCES branches (id),
   CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- schema.sql has no incremental migration files - sessions already existed
+-- before Phase 9 added this column, so it needs its own idempotent ALTER
+-- (see the identical pattern for pipeline_runs.container_id in Phase 7).
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS resume_requested BOOLEAN NOT NULL DEFAULT FALSE AFTER approved_at;
 
 CREATE TABLE IF NOT EXISTS session_requirements (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,

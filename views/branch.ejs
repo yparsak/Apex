@@ -6,6 +6,13 @@
     <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
     <h1><%= branch.branch_name %></h1>
     <p>CO <%= branch.co_number %></p>
+
+    <ol class="stepper">
+      <% topStepper.forEach(function(s) { %>
+        <li class="step step-<%= s.state %>"><%= s.label %></li>
+      <% }) %>
+    </ol>
+
     <% if (lockHeld) { %>
       <p class="lock-ok">You hold the pipeline lock for this CO on this repo.</p>
     <% } else { %>
@@ -87,8 +94,16 @@
       <% if (session.status === 'queued') { %>
         <p class="placeholder">Approved — waiting for the worker to pick this up. Adding another requirement above will pull this back into review.</p>
       <% } %>
+
+      <% if (subStepper) { %>
+        <ol class="stepper substepper">
+          <% subStepper.forEach(function(s) { %>
+            <li class="step step-<%= s.state %>"><%= s.label %></li>
+          <% }) %>
+        </ol>
+      <% } %>
+
       <% if (latestRun) { %>
-        <% if (latestRun.stage) { %><p>Stage: <%= latestRun.stage %></p><% } %>
         <% if (latestRun.commit_sha) { %><p>Pushed commit: <code><%= latestRun.commit_sha %></code></p><% } %>
         <% if (latestRun.error_message) { %><p class="error"><%= latestRun.error_message %></p><% } %>
         <% if (latestRun.build_log) { %>
@@ -98,10 +113,18 @@
           <details><summary>Test log</summary><pre class="pipeline-log"><%= latestRun.test_log %></pre></details>
         <% } %>
       <% } %>
+
       <% if (session.status === 'failed') { %>
-        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/retry">
-          <button type="submit">Retry (full re-run)</button>
-        </form>
+        <div class="overlap-actions">
+          <% if (eligibleForResume) { %>
+            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/resume" class="inline-form">
+              <button type="submit">Resume from <%= latestRun.stage %> (attempt <%= latestRun.resume_attempt_count + 1 %>/3)</button>
+            </form>
+          <% } %>
+          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/retry" class="inline-form">
+            <button type="submit" class="danger-button">Retry (full re-run)</button>
+          </form>
+        </div>
       <% } %>
     <% } %>
   </main>

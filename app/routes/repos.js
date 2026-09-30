@@ -7,6 +7,8 @@ const sessionService = require('../lib/sessionService');
 const lockService = require('../lib/lockService');
 const clarificationService = require('../lib/clarificationService');
 const auditLog = require('../lib/auditLog');
+const pipelineRunner = require('../lib/pipeline/pipelineRunner');
+const pipelineStepper = require('../lib/pipelineStepper');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -164,6 +166,21 @@ async function renderBranchPage(req, res, access, branch, session, error) {
   const eligibleForApproval =
     lockHeld && session.status === 'awaiting_approval' && !pendingRequirement && hasConfirmedRequirement;
 
+  // Eligible for resume-from-failed-step (see ROADMAP.md Phase 9) only while
+  // the failed attempt's container is still kept alive and hasn't already
+  // exhausted its resume budget - pipelineRunner.js tears the container down
+  // and clears container_id once that happens, falling back to the plain
+  // full-retry button below.
+  const eligibleForResume =
+    lockHeld &&
+    session.status === 'failed' &&
+    !!latestRun &&
+    !!latestRun.container_id &&
+    latestRun.resume_attempt_count < pipelineRunner.MAX_RESUME_ATTEMPTS;
+
+  const topStepper = pipelineStepper.buildTopStepper(session, eligibleForApproval);
+  const subStepper = pipelineStepper.buildSubStepper(session, latestRun);
+
   res.render('branch', {
     user: req.session.user,
     repo: access.repo,
@@ -178,6 +195,9 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     overlapRequirement,
     latestRun,
     eligibleForApproval,
+    eligibleForResume,
+    topStepper,
+    subStepper,
     error,
   });
 }
@@ -292,12 +312,50 @@ router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
   const { branch, session } = loaded;
 
   const [result] = await db.query(
-    "UPDATE sessions SET status = 'queued', approved_at = NOW() WHERE id = ? AND status = 'failed'",
+    "UPDATE sessions SET status = 'queued', approved_at = NOW(), resume_requested = FALSE WHERE id = ? AND status = 'failed'",
     [session.id]
   );
   if (result.affectedRows) {
     await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'pipeline_retried' });
   }
+
+  res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+});
+
+// Resume-from-failed-step (see ROADMAP.md Phase 9): unlike /retry above, this
+// reuses the failed attempt's kept-alive container and whatever the last
+// successfully completed step produced - worker.js dispatches to
+// pipelineRunner.resume() instead of .run() based on resume_requested, since
+// both this and /retry just leave the session 'queued'.
+router.post('/:repoId/branches/:branchId/resume', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
+    access.repo.id,
+    branch.co_number,
+  ]);
+  const [[latestRun]] = await db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [
+    session.id,
+  ]);
+  const eligible =
+    lock &&
+    lock.session_id === session.id &&
+    session.status === 'failed' &&
+    latestRun &&
+    latestRun.container_id &&
+    latestRun.resume_attempt_count < pipelineRunner.MAX_RESUME_ATTEMPTS;
+
+  if (!eligible) {
+    return renderBranchPage(req, res, access, branch, session, 'This session can no longer resume from its failed step.');
+  }
+
+  await db.query("UPDATE sessions SET status = 'queued', resume_requested = TRUE WHERE id = ?", [session.id]);
+  await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'pipeline_resume_requested' });
 
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
