@@ -2,6 +2,7 @@
 // dev/{initials}-{co_number}-{n}.
 const db = require('./db');
 const githubApi = require('./github/githubApi');
+const blockedAllowlistAlerts = require('./blockedAllowlistAlerts');
 
 const CO_NUMBER_RE = /^C[0-9]{8}$/;
 
@@ -68,7 +69,17 @@ async function createBranch({ repo, org, coNumber, user }) {
     );
   }
 
-  await githubApi.createBranchRef(org.name, repo.name, `refs/heads/${branchName}`, defaultBranch.commit.sha);
+  try {
+    await githubApi.createBranchRef(org.name, repo.name, `refs/heads/${branchName}`, defaultBranch.commit.sha);
+  } catch (err) {
+    // See ROADMAP.md Phase 10: a 403 here is either an App-permission scope
+    // violation or the dev/** ruleset rejecting the ref - record it for the
+    // admin dashboard, then still surface the failure to the user as before.
+    if (err.httpStatus === 403) {
+      await blockedAllowlistAlerts.recordAlert({ repoId: repo.id, httpStatus: 403, detail: err.message });
+    }
+    throw err;
+  }
 
   try {
     const [result] = await db.query(

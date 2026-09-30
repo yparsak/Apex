@@ -13,5 +13,7 @@ router.use('/repos', require('./repos'));
 router.use('/users', require('./users'));
 router.use('/permissions', require('./permissions'));
 router.use('/repo-clarification-instructions', require('./repoClarificationInstructions'));
+router.use('/alerts', require('./alerts'));
+router.use('/locks', require('./locks'));
 
 module.exports = router;

@@ -373,6 +373,36 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
   `GET /api/admin/locks`, `/api/admin/lock-contention`.
 - `docs/github-app-key-rotation.md` and `docs/human-judgment-reliance.md`.
 
+**Implementation notes (decisions made while building this phase):**
+- **No schema changes** - `blocked_allowlist_alerts` and `lock_contention_events` were
+  both already part of Phase 1's upfront migration; `lock_contention_events` was
+  already being written to by `lockService.acquireLock` since Phase 4.
+  `blocked_allowlist_alerts` was genuinely write-only until now - nothing had ever
+  inserted a row - so this phase's actual work was adding the write path, not the
+  schema or the read path.
+- **Two write paths feed `blocked_allowlist_alerts`**, at different confidence
+  levels: `githubApi.createBranchRef` (the only REST write call in that module) now
+  attaches the real numeric `httpStatus` to its thrown error, and `branchService.
+  createBranch` records an alert when that's exactly 403. `pushService.js`'s `git push`
+  can't hand back a clean status code the same way, so it uses a text heuristic
+  (`looksLikeAllowlistBlock`) over git's own stderr - `/403/` or a permission/
+  protected-branch phrase - to decide whether a push failure belongs here. Both paths
+  explicitly exclude the non-fast-forward case, which is a separate, expected,
+  already-handled retry condition (see ROADMAP.md Phase 7) that never reaches this
+  table regardless of which path it's checked from.
+- **`GET /api/admin/alerts` / `/locks` / `/lock-contention` are real, at exactly those
+  paths** (`app/routes/apiAdmin.js`, mounted at `/api/admin`), reusing the same
+  `requireAdmin` middleware as the rest of the admin surface. The HTML admin pages
+  (`/admin/alerts`, `/admin/locks`) don't call these endpoints internally over HTTP -
+  they call the same underlying service functions (`blockedAllowlistAlerts.
+  listAlerts`, `lockService.listActiveLocks`/`listContentionEvents`) directly, since
+  making a self-request for data already available in-process would be pure overhead.
+- **`/admin/locks` combines both halves of the "lock-contention dashboard"** language
+  into one page - currently-held locks (real-time) and historical contention events
+  (append-only) - rather than two separate admin nav items, since they're two views of
+  the same underlying concern and the roadmap's two API paths map cleanly onto two
+  sections of one page.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

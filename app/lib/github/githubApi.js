@@ -41,11 +41,17 @@ async function getBranch(owner, repo, branch) {
   return res.json();
 }
 
+// The only write call in this module - httpStatus is attached to a thrown
+// error so callers can distinguish a 403 (see ROADMAP.md Phase 10's
+// blocked_allowlist_alerts) from any other failure without re-parsing the
+// message text.
 async function createBranchRef(owner, repo, ref, sha) {
   const res = await githubRequest('POST', `/repos/${owner}/${repo}/git/refs`, { ref, sha });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`GitHub createBranchRef ${owner}/${repo} ${ref} failed: HTTP ${res.status}: ${body.slice(0, 300)}`);
+    const err = new Error(`GitHub createBranchRef ${owner}/${repo} ${ref} failed: HTTP ${res.status}: ${body.slice(0, 300)}`);
+    err.httpStatus = res.status;
+    throw err;
   }
   return res.json();
 }

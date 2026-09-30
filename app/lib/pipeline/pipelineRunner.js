@@ -158,7 +158,7 @@ async function testStep(containerId, config) {
 
 async function finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog }) {
   await setStage(runId, 'pushing');
-  const commitSha = await pushService.pushBranch({ containerId, workspacePath: WORKSPACE, org, repo, branch });
+  const commitSha = await pushService.pushBranch({ containerId, workspacePath: WORKSPACE, org, repo, branch, sessionId });
 
   // Requirements log update is synchronous and inline, not queued/cron'd like
   // the Spec/Communication Protocol doc (see ROADMAP.md Phase 8) - and

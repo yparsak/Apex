@@ -1,0 +1,46 @@
+<%- include('../partials/head', { title: 'Admin - Locks', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'locks' }) %>
+    <h1>Currently held locks</h1>
+    <p class="placeholder">One AI session at a time per (repo, CO), covering the full pipeline.</p>
+    <% if (!activeLocks.length) { %>
+      <p class="placeholder">No AI session currently holds a pipeline lock.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>Repo</th><th>CO</th><th>Held by</th><th>Session status</th><th>Since</th></tr></thead>
+        <tbody>
+          <% activeLocks.forEach(function(l) { %>
+          <tr>
+            <td><%= l.org_name %> / <%= l.repo_group_name %> / <%= l.repo_name %></td>
+            <td><%= l.co_number %></td>
+            <td><%= l.holder_username %></td>
+            <td><%= l.session_status %></td>
+            <td><%= l.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+
+    <h2>Contention history</h2>
+    <p class="placeholder">One row per genuine cross-user lock conflict on the same (repo, CO) - not every lock, just the ones another user actually collided with.</p>
+    <% if (!contentionEvents.length) { %>
+      <p class="placeholder">No lock contention recorded yet.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>When</th><th>Repo</th><th>CO</th><th>Requested by</th><th>Held by</th></tr></thead>
+        <tbody>
+          <% contentionEvents.forEach(function(e) { %>
+          <tr>
+            <td><%= e.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+            <td><%= e.org_name %> / <%= e.repo_group_name %> / <%= e.repo_name %></td>
+            <td><%= e.co_number %></td>
+            <td><%= e.requesting_username %></td>
+            <td><%= e.holding_username || '—' %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+  </main>
+<%- include('../partials/foot') %>

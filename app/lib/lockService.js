@@ -48,4 +48,44 @@ async function releaseLock(repoId, coNumber, sessionId) {
   ]);
 }
 
-module.exports = { acquireLock, releaseLock };
+// Lock-contention dashboard (see ROADMAP.md Phase 10): every AI session
+// currently occupying a (repo, CO) slot, for real-time visibility into
+// what's actually locked right now, not just after the fact.
+async function listActiveLocks() {
+  const [rows] = await db.query(
+    `SELECT pl.*, r.name AS repo_name, rg.name AS repo_group_name, o.name AS org_name,
+            s.status AS session_status, u.username AS holder_username
+     FROM pipeline_locks pl
+     JOIN repos r ON r.id = pl.repo_id
+     JOIN repo_groups rg ON rg.id = r.repo_group_id
+     JOIN orgs o ON o.id = rg.org_id
+     JOIN sessions s ON s.id = pl.session_id
+     JOIN users u ON u.id = s.user_id
+     ORDER BY pl.created_at DESC`
+  );
+  return rows;
+}
+
+// listContentionEvents(...) - historical record of every genuine cross-user
+// lock conflict (see lockService.acquireLock above), not the locks
+// themselves - pairs with listActiveLocks to form the full Phase 10
+// lock-contention dashboard.
+async function listContentionEvents({ limit = 200 } = {}) {
+  const [rows] = await db.query(
+    `SELECT lce.*, r.name AS repo_name, rg.name AS repo_group_name, o.name AS org_name,
+            ru.username AS requesting_username, hu.username AS holding_username
+     FROM lock_contention_events lce
+     JOIN repos r ON r.id = lce.repo_id
+     JOIN repo_groups rg ON rg.id = r.repo_group_id
+     JOIN orgs o ON o.id = rg.org_id
+     JOIN users ru ON ru.id = lce.requesting_user_id
+     LEFT JOIN sessions hs ON hs.id = lce.holding_session_id
+     LEFT JOIN users hu ON hu.id = hs.user_id
+     ORDER BY lce.id DESC
+     LIMIT ?`,
+    [limit]
+  );
+  return rows;
+}
+
+module.exports = { acquireLock, releaseLock, listActiveLocks, listContentionEvents };

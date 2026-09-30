@@ -1,0 +1,30 @@
+<%- include('../partials/head', { title: 'Admin - Alerts', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'alerts' }) %>
+    <h1>Blocked-allowlist alerts</h1>
+    <p class="placeholder">
+      Every GitHub write call that came back HTTP 403. This is a heuristic, not a
+      guarantee — GitHub returns 403 both for an App-permission scope violation and for
+      the <code>dev/**</code> ruleset rejecting an out-of-pattern ref. A non-fast-forward
+      push rejection is a separate, already-handled retry case and never appears here.
+    </p>
+    <% if (!alerts.length) { %>
+      <p class="placeholder">No blocked writes recorded yet.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>When</th><th>Repo</th><th>Session</th><th>HTTP status</th><th>Detail</th></tr></thead>
+        <tbody>
+          <% alerts.forEach(function(a) { %>
+          <tr>
+            <td><%= a.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+            <td><%= a.repo_name ? (a.org_name + ' / ' + a.repo_group_name + ' / ' + a.repo_name) : '—' %></td>
+            <td><%= a.session_id || '—' %></td>
+            <td><%= a.http_status %></td>
+            <td><%= a.detail || '—' %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+  </main>
+<%- include('../partials/foot') %>
