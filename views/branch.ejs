@@ -60,7 +60,7 @@
       <% }) %>
     </div>
 
-    <% if (session.status === 'awaiting_approval') { %>
+    <% if (session.status === 'awaiting_approval' || session.status === 'queued') { %>
       <% if (!pendingRequirement) { %>
         <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
           <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
@@ -71,17 +71,22 @@
       <% } else { %>
         <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
       <% } %>
+    <% } %>
 
-      <% if (eligibleForPipeline) { %>
-        <h2>Pipeline</h2>
-        <p class="placeholder">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
-        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/run-pipeline">
-          <button type="submit">Run pipeline (implement &amp; push)</button>
-        </form>
-      <% } %>
-    <% } else { %>
+    <% if (eligibleForApproval) { %>
+      <h2>Approve &amp; Implement</h2>
+      <p class="placeholder">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
+      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/approve">
+        <button type="submit">Approve &amp; Implement</button>
+      </form>
+    <% } %>
+
+    <% if (session.status !== 'awaiting_approval') { %>
       <h2>Pipeline</h2>
       <p class="pipeline-status pipeline-<%= session.status %>">Status: <%= session.status %></p>
+      <% if (session.status === 'queued') { %>
+        <p class="placeholder">Approved — waiting for the worker to pick this up. Adding another requirement above will pull this back into review.</p>
+      <% } %>
       <% if (latestRun) { %>
         <% if (latestRun.stage) { %><p>Stage: <%= latestRun.stage %></p><% } %>
         <% if (latestRun.commit_sha) { %><p>Pushed commit: <code><%= latestRun.commit_sha %></code></p><% } %>
@@ -92,6 +97,11 @@
         <% if (latestRun.test_log) { %>
           <details><summary>Test log</summary><pre class="pipeline-log"><%= latestRun.test_log %></pre></details>
         <% } %>
+      <% } %>
+      <% if (session.status === 'failed') { %>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/retry">
+          <button type="submit">Retry (full re-run)</button>
+        </form>
       <% } %>
     <% } %>
   </main>

@@ -236,6 +236,56 @@ browser.
   `UPDATE ... WHERE status = 'failed'`) as a full from-scratch re-run (codegen, sandbox
   build/test, push) — nothing from the failed `pipeline_runs` row is reused.
 
+**Implementation notes (decisions made while building this phase):**
+- **Requirements log format**: stored as one `repo_documents` row per repo
+  (`co_number=''`), with `## CO <number>` headings parsed/rendered by a small shared
+  module (`requirementsLogFormat.js`) rather than a heavier Markdown/AST dependency.
+  `requirementsLogService.js` finds-or-creates the section for a completing session's
+  CO and appends a dated, session-attributed entry — genuinely cumulative, never
+  overwritten. The Spec/Communication Protocol doc also uses `co_number=''` but is
+  never CO-scoped by nature (it summarizes the whole trunk), so in practice both doc
+  types always write that sentinel; the column stays for the schema's original
+  generality rather than because either doc type varies it today.
+- **CO-scoped cross-repo search is a content search, not a `WHERE co_number = ?`
+  query** — since storage is repo-level, `documentsService.js` loads each accessible
+  repo's requirements log and extracts the matching `## CO` section in application
+  code, reusing `requirementsLogFormat.js`'s parser. It only searches the requirements
+  log; the Spec/Communication Protocol doc is browsable on each repo's own Documents
+  page instead, since it has no CO to search by.
+- **`specDocWorker.js` is a plain Node interval loop**, not host cron/systemd — the
+  exact mechanism was explicitly left open pending a deployment target (still
+  undecided), and an interval loop is the simplest thing that's actually runnable in
+  this Makefile-driven dev setup today. `SPEC_DOC_SCAN_INTERVAL_MS` controls the
+  cadence. The Spec/Communication Protocol doc is fully regenerated on every run
+  (not incrementally patched like the requirements log) — "regenerated" is taken
+  literally, which also means it doesn't need to parse or preserve its own prior
+  structure.
+- **Approval reset lives in `clarificationService.js`, not the route layer**: the
+  moment `finalizeRequirement` inserts a new `session_requirements` row — confirmed
+  outright or `pending_confirm` via overlap — it checks whether the session is
+  currently `queued` and, if so, reverts it to `awaiting_approval` with
+  `approved_at = NULL` (audit-logged as `approval_reset`). This only fires for
+  `queued` (not yet picked up by `worker.js`); a `running` session is too late to
+  un-approve, consistent with the roadmap only calling out `queued`/approved as
+  reversible.
+- **The clarification form now stays open through `queued`**, not just
+  `awaiting_approval` (Phase 7 hid it once a session left `awaiting_approval`) — since
+  adding a requirement while queued is exactly the scenario that should pull a session
+  back into review. It's still hidden once `running`/`completed`/`failed`. The
+  `/messages` route enforces this server-side too, not just in the view — Phase 7's
+  version had no session-status guard at all, which would have let a message land
+  during or after a pipeline run.
+- **Retry abandons the failed attempt's kept-alive container** rather than leaving it
+  orphaned: `pipelineRunner.js` now removes any of a session's prior
+  `pipeline_runs.container_id` values (and nulls the column) at the very start of
+  `run()`, before doing anything else. This only ever runs inside `worker.js` (the
+  process with Docker socket access), not the web route that flips status to
+  `queued` — the route itself never touches Docker directly, consistent with Phase 7's
+  Docker-outside-of-Docker setup.
+- No schema changes were needed this phase — `repo_documents`, `spec_doc_jobs`,
+  `sessions.approved_at`, and `repos.spec_doc_synced_commit_sha` were all already part
+  of Phase 1's upfront migration.
+
 ## Phase 9 — Session progress indicator
 
 Not in notes.md's original scope; added because a coarse `sessions.status` enum makes

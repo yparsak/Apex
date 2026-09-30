@@ -10,6 +10,7 @@ const dockerRunner = require('../docker/dockerRunner');
 const pipelineConfig = require('./pipelineConfig');
 const codegenService = require('./codegenService');
 const pushService = require('./pushService');
+const requirementsLogService = require('../documents/requirementsLogService');
 
 const WORKSPACE = '/workspace';
 const SANDBOX_NETWORK = process.env.SANDBOX_NETWORK || 'apex-net';
@@ -76,6 +77,21 @@ async function failRun(runId, { buildLog, testLog, errorMessage }) {
   ]);
 }
 
+// A retry (see ROADMAP.md Phase 8) re-queues the same session for a full
+// from-scratch re-run - this abandons any earlier attempt's kept-alive
+// container (see ROADMAP.md Phase 7) rather than reusing it, since nothing
+// from a failed pipeline_runs row carries over. Best-effort: a container
+// that's already gone (e.g. manually cleaned up) shouldn't fail the retry.
+async function cleanupPriorContainers(sessionId) {
+  const [rows] = await db.query('SELECT id, container_id FROM pipeline_runs WHERE session_id = ? AND container_id IS NOT NULL', [
+    sessionId,
+  ]);
+  for (const row of rows) {
+    await dockerRunner.removeContainer(row.container_id).catch(() => {});
+    await db.query('UPDATE pipeline_runs SET container_id = NULL WHERE id = ?', [row.id]);
+  }
+}
+
 // run(sessionId) - never throws; failures are recorded on the session/run
 // rows and swallowed so worker.js's poll loop keeps going.
 async function run(sessionId) {
@@ -95,6 +111,11 @@ async function run(sessionId) {
 
   let containerId = null;
   try {
+    // A prior failed attempt on this same session (see ROADMAP.md Phase 8's
+    // retry-on-failure) left its container kept alive - this run abandons it
+    // rather than resuming it, so clean it up before doing anything else.
+    await cleanupPriorContainers(sessionId);
+
     // Branch-existence re-check at session start (see ROADMAP.md Phase 7) -
     // another engineer or admin may have deleted the branch on GitHub since
     // it was created.
@@ -170,6 +191,12 @@ async function run(sessionId) {
 
     await setStage(runId, 'pushing');
     const commitSha = await pushService.pushBranch({ containerId, workspacePath: WORKSPACE, org, repo, branch });
+
+    // Requirements log update is synchronous and inline, not queued/cron'd
+    // like the Spec/Communication Protocol doc (see ROADMAP.md Phase 8) -
+    // and happens exactly once, since a session only ever reaches
+    // 'completed' once in its lifetime.
+    await requirementsLogService.recordCompletedSession({ repo, branch, session, requirements });
 
     await completeRun(runId, { commitSha, buildLog, testLog });
     await db.query("UPDATE sessions SET status = 'completed' WHERE id = ?", [sessionId]);

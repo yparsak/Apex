@@ -5,6 +5,7 @@
   <main class="content">
     <p><a href="/"><%= org.name %> / <%= repoGroup.name %></a></p>
     <h1><%= repo.name %></h1>
+    <p><a href="/repos/<%= repo.id %>/documents">Documents</a></p>
     <% if (repo.description) { %><p><%= repo.description %></p><% } %>
     <% if (error) { %><p class="error"><%= error %></p><% } %>
     <h2>Start new branch</h2>

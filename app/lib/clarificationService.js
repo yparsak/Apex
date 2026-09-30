@@ -117,6 +117,22 @@ async function finalizeRequirement({ session, branch, org, repo, user, text }) {
     [session.id, text, overlap ? overlap.matchedRequirementId : null, overlap ? 'pending_confirm' : 'confirmed_proceed']
   );
 
+  // Approval is never "locked in" (see ROADMAP.md Phase 8): a newly finalized
+  // requirement - confirmed outright or pending a human's overlap call -
+  // drops an already-approved, still-queued session back out of the approval
+  // gate, since the scope of work it was approved for just changed. Only
+  // 'queued' (not yet picked up by worker.js) reverts this way - a session
+  // that's already 'running' is too late to un-approve.
+  if (session.status === 'queued') {
+    await db.query("UPDATE sessions SET status = 'awaiting_approval', approved_at = NULL WHERE id = ?", [session.id]);
+    await auditLog.logAction({
+      sessionId: session.id,
+      userId: user.id,
+      action: 'approval_reset',
+      detail: 'A new requirement was finalized after approval - re-approval is required.',
+    });
+  }
+
   await auditLog.logAction({
     sessionId: session.id,
     userId: user.id,

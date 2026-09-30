@@ -1,0 +1,30 @@
+<%- include('partials/head', { title: 'Documents', user: user }) %>
+  <aside class="sidebar"></aside>
+  <main class="content">
+    <h1>Documents</h1>
+    <p class="placeholder">Search every repo you can access for a CO's requirements log entry.</p>
+
+    <form method="GET" action="/documents" class="stacked-form">
+      <label>CO number
+        <input type="text" name="co_number" value="<%= coNumber %>" placeholder="C12345678" pattern="C[0-9]{8}">
+      </label>
+      <button type="submit">Search</button>
+    </form>
+
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+
+    <% if (coNumber && !error) { %>
+      <h2>Results for <%= coNumber %></h2>
+      <% if (!results.length) { %>
+        <p class="placeholder">No requirements log entries for this CO in any repo you can access.</p>
+      <% } else { %>
+        <% results.forEach(function(r) { %>
+          <div class="document-result">
+            <h3><a href="/repos/<%= r.repo.id %>/documents"><%= r.repo.org_name %> / <%= r.repo.repo_group_name %> / <%= r.repo.name %></a></h3>
+            <pre class="document-body"><%= r.body %></pre>
+          </div>
+        <% }) %>
+      <% } %>
+    <% } %>
+  </main>
+<%- include('partials/foot') %>

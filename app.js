@@ -8,6 +8,7 @@ const authRoutes = require('./app/routes/auth');
 const homeRoutes = require('./app/routes/home');
 const adminRoutes = require('./app/routes/admin');
 const reposRoutes = require('./app/routes/repos');
+const documentsRoutes = require('./app/routes/documents');
 
 const app = express();
 
@@ -53,6 +54,7 @@ app.use(authRoutes);
 app.use(homeRoutes);
 app.use('/admin', adminRoutes);
 app.use('/repos', reposRoutes);
+app.use('/documents', documentsRoutes);
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {

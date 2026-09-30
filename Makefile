@@ -20,6 +20,7 @@ DB_ROOT_PASSWORD ?= apex_dev_root_password
 
 APP_CONTAINER := apex-app
 WORKER_CONTAINER := apex-worker
+SPEC_DOC_WORKER_CONTAINER := apex-spec-doc-worker
 PORT ?= 3000
 NODE_IMAGE := docker.io/library/node:22-slim
 
@@ -29,7 +30,7 @@ NODE_IMAGE := docker.io/library/node:22-slim
 # rootless Podman, which already maps to the host user.
 RUN_AS_HOST_USER := --user "$$(id -u):$$(id -g)" -e HOME=/tmp
 
-.PHONY: setup network db-up db-wait migrate install dev worker stop create-admin logs db-down clean
+.PHONY: setup network db-up db-wait migrate install dev worker spec-doc-worker stop create-admin logs db-down clean
 
 setup: network db-up db-wait migrate install
 	@echo ""
@@ -87,12 +88,24 @@ worker: db-up
 	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git >/dev/null && npx nodemon worker.js"
 	@echo "Apex pipeline worker started (container: $(WORKER_CONTAINER))"
 
+# Phase 8: runs specDocWorker.js on its own interval loop, decoupled from
+# worker.js's AI-pipeline poll loop (see ROADMAP.md Phase 8) - just GitHub +
+# NIM network access needed, no Docker socket, so this uses the plain Node
+# image the same way `dev` does.
+spec-doc-worker: db-up
+	@$(RUNTIME) rm -f $(SPEC_DOC_WORKER_CONTAINER) 2>/dev/null || true
+	$(RUNTIME) run -d --name $(SPEC_DOC_WORKER_CONTAINER) --network $(NETWORK) \
+	  -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) --env-file .env \
+	  $(NODE_IMAGE) npx nodemon specDocWorker.js
+	@echo "Apex spec-doc worker started (container: $(SPEC_DOC_WORKER_CONTAINER))"
+
 logs:
 	$(RUNTIME) logs -f $(APP_CONTAINER)
 
 stop:
 	$(RUNTIME) rm -f $(APP_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
+	$(RUNTIME) rm -f $(SPEC_DOC_WORKER_CONTAINER) 2>/dev/null || true
 
 db-down:
 	$(RUNTIME) rm -f $(DB_CONTAINER) 2>/dev/null || true

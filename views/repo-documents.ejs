@@ -1,0 +1,25 @@
+<%- include('partials/head', { title: repo.name + ' documents', user: user }) %>
+  <aside class="sidebar">
+    <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
+  </aside>
+  <main class="content">
+    <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
+    <h1>Documents</h1>
+
+    <h2>Requirements log</h2>
+    <% if (requirementsLog) { %>
+      <p class="placeholder">Last updated <%= requirementsLog.updated_at %></p>
+      <pre class="document-body"><%= requirementsLog.content %></pre>
+    <% } else { %>
+      <p class="placeholder">No requirements have been implemented on this repo yet.</p>
+    <% } %>
+
+    <h2>Spec / Communication Protocol</h2>
+    <% if (specDoc) { %>
+      <p class="placeholder">Last updated <%= specDoc.updated_at %></p>
+      <pre class="document-body"><%= specDoc.content %></pre>
+    <% } else { %>
+      <p class="placeholder">Not generated yet — regenerates automatically once trunk has content to summarize.</p>
+    <% } %>
+  </main>
+<%- include('partials/foot') %>

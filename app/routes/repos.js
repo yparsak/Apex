@@ -68,6 +68,35 @@ router.get('/:repoId', async (req, res) => {
   await renderRepoPage(req, res, access, null);
 });
 
+// Per-repo Documents view (see ROADMAP.md Phase 8) - the global, CO-scoped
+// cross-repo search lives at GET /documents instead (app/routes/documents.js).
+router.get('/:repoId/documents', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const [branches, reqLogResult, specDocResult] = await Promise.all([
+    branchService.listActiveBranches(access.repo, access.org),
+    db.query(
+      "SELECT content, updated_at FROM repo_documents WHERE repo_id = ? AND doc_type = 'requirements_log' AND co_number = ''",
+      [access.repo.id]
+    ),
+    db.query(
+      "SELECT content, updated_at FROM repo_documents WHERE repo_id = ? AND doc_type = 'spec_communication_protocol' AND co_number = ''",
+      [access.repo.id]
+    ),
+  ]);
+
+  res.render('repo-documents', {
+    user: req.session.user,
+    repo: access.repo,
+    org: access.org,
+    repoGroup: access.repoGroup,
+    branches,
+    requirementsLog: reqLogResult[0][0] || null,
+    specDoc: specDocResult[0][0] || null,
+  });
+});
+
 router.post('/:repoId/branches', async (req, res) => {
   const access = await loadAccess(req, res);
   if (!access) return;
@@ -125,13 +154,14 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     overlapRequirement = row || null;
   }
 
-  // Eligible for Phase 7's "Run Pipeline" trigger once every requirement has
+  // Eligible for the "Approve & Implement" gate once every requirement has
   // resolved out of pending_confirm and at least one is actually confirmed to
-  // proceed - the full "Approve & Implement" gate (re-opening on new
-  // instructions, etc.) is Phase 8 scope; this is the minimal stand-in that
-  // gets a session into 'queued' for worker.js to pick up.
+  // proceed (see ROADMAP.md Phase 8). Approval is never "locked in": a new
+  // requirement finalized after approval drops the session back out of
+  // 'queued' automatically (see clarificationService.js), so this condition
+  // re-evaluates true again once that happens.
   const hasConfirmedRequirement = requirements.some((r) => r.confirm_status === 'confirmed_proceed');
-  const eligibleForPipeline =
+  const eligibleForApproval =
     lockHeld && session.status === 'awaiting_approval' && !pendingRequirement && hasConfirmedRequirement;
 
   res.render('branch', {
@@ -147,7 +177,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     pendingRequirement,
     overlapRequirement,
     latestRun,
-    eligibleForPipeline,
+    eligibleForApproval,
     error,
   });
 }
@@ -171,6 +201,14 @@ router.post('/:repoId/branches/:branchId/messages', async (req, res) => {
 
   const text = (req.body.text || '').trim();
   if (!text) return res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+
+  // The clarification loop stays open through 'queued' (a user can still add
+  // more before worker.js picks it up - see ROADMAP.md Phase 8: approval is
+  // never "locked in"), but not once a pipeline is actually running or has
+  // reached a terminal state.
+  if (session.status !== 'awaiting_approval' && session.status !== 'queued') {
+    return res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+  }
 
   // Pausing until any overlap flag is resolved is enforced here too, not
   // just by hiding the form in the view - see notes.md / ROADMAP.md Phase 5
@@ -202,7 +240,14 @@ router.post('/:repoId/branches/:branchId/messages', async (req, res) => {
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
 
-router.post('/:repoId/branches/:branchId/run-pipeline', async (req, res) => {
+// Approve & Implement (see ROADMAP.md Phase 8): the human gate a session
+// must pass before worker.js will pick it up. Offered once every submitted
+// requirement has resolved out of pending_confirm; clicking it sets
+// approved_at and flips the session to 'queued'. Approval is never "locked
+// in" - see clarificationService.js's finalizeRequirement, which drops a
+// 'queued' session back to 'awaiting_approval' the moment a new requirement
+// is finalized on it.
+router.post('/:repoId/branches/:branchId/approve', async (req, res) => {
   const access = await loadAccess(req, res);
   if (!access) return;
 
@@ -223,11 +268,36 @@ router.post('/:repoId/branches/:branchId/run-pipeline', async (req, res) => {
     lock && lock.session_id === session.id && session.status === 'awaiting_approval' && !hasPending && hasConfirmed;
 
   if (!eligible) {
-    return renderBranchPage(req, res, access, branch, session, 'This session is not eligible to run the pipeline yet.');
+    return renderBranchPage(req, res, access, branch, session, 'This session is not eligible for approval yet.');
   }
 
-  await db.query("UPDATE sessions SET status = 'queued' WHERE id = ?", [session.id]);
-  await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'pipeline_queued' });
+  await db.query("UPDATE sessions SET status = 'queued', approved_at = NOW() WHERE id = ?", [session.id]);
+  await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'session_approved' });
+
+  res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+});
+
+// Retry-on-failure (see ROADMAP.md Phase 8): re-queues the *same* session row
+// as a full from-scratch re-run - codegen, sandbox build/test, and push all
+// happen again. Nothing from the failed pipeline_runs row is reused;
+// pipelineRunner.js removes that attempt's kept-alive container the next
+// time it runs this session, rather than resuming from it (that's Phase 9's
+// resume-from-step retry, a distinct feature from this one).
+router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  const [result] = await db.query(
+    "UPDATE sessions SET status = 'queued', approved_at = NOW() WHERE id = ? AND status = 'failed'",
+    [session.id]
+  );
+  if (result.affectedRows) {
+    await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'pipeline_retried' });
+  }
 
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
