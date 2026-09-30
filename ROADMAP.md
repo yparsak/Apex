@@ -160,6 +160,53 @@ browser.
   still need an eventual timeout-based cleanup; not decided yet — flagged under
   Open/future.)
 
+**Implementation notes (decisions made while building this phase):**
+- **Clone-only token**, concretely: rather than a second GitHub App, `githubAppAuth.js`
+  now mints and caches installation tokens per named scope. The default (full
+  `contents: write`) token is unchanged; a second, `contents: read`-scoped token is
+  minted via the same installation-token endpoint's `permissions` field, which GitHub
+  allows to narrow (never widen) the App's own granted permissions.
+- **Codegen runs against GitHub reads, not container reads**, because the container's
+  cloned tree and the branch tip are identical at clone time: `FETCH_FILE` during
+  codegen is served from GitHub, layered under an in-memory map of this session's own
+  not-yet-committed writes (so re-fetching a path you already wrote sees your edit, not
+  the stale GitHub copy). Only `WRITE_FILE` touches the container, via `docker exec`.
+- **Push happens via real git, not the Contents API**: after test passes, the
+  container's already-committed working tree (`git commit` runs inside the container
+  right after codegen, while network is still open, before sealing) is pulled out with
+  `docker cp` into a host temp dir, and the host pushes it with plain `git` — this is
+  the only step that touches the write-capable token. This needed `git` on the worker's
+  own image too, not just inside sandboxes.
+- **Single-process, sequential worker**: `worker.js` polls for one `queued` session at
+  a time and runs it to completion before polling again, rather than processing
+  multiple sessions concurrently. Nothing in this phase needs more; scaling this is an
+  open concern only if a real backlog shows up in practice.
+- **`apex.pipeline.json`'s `image` is assumed to include `git`** (true of official
+  non-`slim`/non-`alpine` language images, which are built on `buildpack-deps`). If a
+  repo declares a minimal image without `git`, the clone step fails loudly with that
+  image's own "command not found" error — consistent with "never invent a default,"
+  extended here to environment tooling, not just build/test commands.
+- **Schema**: `pipeline_runs` gained `container_id` (the kept-alive-on-failure
+  container, cleared on success) and `error_message` (a step failure that isn't a
+  build/test log — e.g. a missing `apex.pipeline.json` or a deleted branch). Since
+  `schema.sql` has no incremental migration files and `pipeline_runs` already existed
+  before this phase, these two are added via an idempotent `ALTER TABLE ... ADD COLUMN
+  IF NOT EXISTS` rather than just the `CREATE TABLE IF NOT EXISTS` used for wholly new
+  tables.
+- **Docker-outside-of-Docker for the worker**: `worker.js` itself runs inside a
+  container (per this project's Makefile-driven dev setup), so its sandbox containers
+  are created as *siblings* on the host's Docker daemon via a bind-mounted
+  `/var/run/docker.sock`, not nested inside the worker's own container. This is also
+  why the sandbox clones into the container's own internal filesystem rather than a
+  bind-mounted host directory — a host-path bind mount specified from inside the worker
+  container wouldn't resolve correctly against the host daemon.
+- **The full "Approve & Implement" human gate is Phase 8 scope**, but Phase 7 still
+  needs *some* way to get a session into `queued` for `worker.js` to pick up (testing
+  philosophy: every phase from Phase 2 onward is clickable end-to-end). A minimal
+  "Run pipeline" button stands in for it now — eligible once every requirement has
+  resolved out of `pending_confirm` and at least one is confirmed to proceed — and
+  Phase 8 replaces/extends it with the real gate (re-opening on new instructions, etc.).
+
 ## Phase 8 — DEV branch delivery
 
 - Combined commit to the DEV branch is code-only — no doc files committed (see below).

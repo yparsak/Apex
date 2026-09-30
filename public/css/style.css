@@ -358,3 +358,30 @@ body {
   font: inherit;
   resize: vertical;
 }
+
+.pipeline-status {
+  font-weight: 600;
+}
+
+.pipeline-queued,
+.pipeline-running {
+  color: #b45309;
+}
+
+.pipeline-completed {
+  color: #15803d;
+}
+
+.pipeline-failed {
+  color: #b91c1c;
+}
+
+.pipeline-log {
+  max-width: 700px;
+  max-height: 320px;
+  overflow: auto;
+  background: #f3f4f6;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+}

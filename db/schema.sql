@@ -170,6 +170,11 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   status ENUM('running', 'completed', 'failed') NOT NULL DEFAULT 'running',
   stage ENUM('cloning', 'codegen', 'building', 'testing', 'pushing') NULL,
   resume_attempt_count INT UNSIGNED NOT NULL DEFAULT 0,
+  -- container_id: the ephemeral sandbox container for this run (see
+  -- ROADMAP.md Phase 7). Cleared to NULL on success; left set on failure so
+  -- Phase 9's resume-from-step retry can reuse the kept-alive container.
+  container_id VARCHAR(64) NULL,
+  error_message TEXT NULL,
   build_log LONGTEXT NULL,
   test_log LONGTEXT NULL,
   commit_sha VARCHAR(40) NULL,
@@ -180,6 +185,13 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   KEY idx_pipeline_runs_session (session_id),
   CONSTRAINT fk_pipeline_runs_session FOREIGN KEY (session_id) REFERENCES sessions (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- schema.sql has no incremental migration files - CREATE TABLE IF NOT EXISTS
+-- makes re-running it safe for new tables, but pipeline_runs already existed
+-- before Phase 7 added these two columns, so they need their own idempotent
+-- ALTER (MariaDB-specific IF NOT EXISTS on ADD COLUMN, supported since 10.0.2).
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS container_id VARCHAR(64) NULL AFTER resume_attempt_count;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS error_message TEXT NULL AFTER container_id;
 
 -- ---------------------------------------------------------------------------
 -- Phase 6: admin-authored per-repo clarification instructions. Deliberately a

@@ -60,15 +60,39 @@
       <% }) %>
     </div>
 
-    <% if (!pendingRequirement) { %>
-      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
-        <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
-          <textarea name="text" rows="4" required></textarea>
-        </label>
-        <button type="submit">Send</button>
-      </form>
+    <% if (session.status === 'awaiting_approval') { %>
+      <% if (!pendingRequirement) { %>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
+          <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
+            <textarea name="text" rows="4" required></textarea>
+          </label>
+          <button type="submit">Send</button>
+        </form>
+      <% } else { %>
+        <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
+      <% } %>
+
+      <% if (eligibleForPipeline) { %>
+        <h2>Pipeline</h2>
+        <p class="placeholder">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/run-pipeline">
+          <button type="submit">Run pipeline (implement &amp; push)</button>
+        </form>
+      <% } %>
     <% } else { %>
-      <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
+      <h2>Pipeline</h2>
+      <p class="pipeline-status pipeline-<%= session.status %>">Status: <%= session.status %></p>
+      <% if (latestRun) { %>
+        <% if (latestRun.stage) { %><p>Stage: <%= latestRun.stage %></p><% } %>
+        <% if (latestRun.commit_sha) { %><p>Pushed commit: <code><%= latestRun.commit_sha %></code></p><% } %>
+        <% if (latestRun.error_message) { %><p class="error"><%= latestRun.error_message %></p><% } %>
+        <% if (latestRun.build_log) { %>
+          <details><summary>Build log</summary><pre class="pipeline-log"><%= latestRun.build_log %></pre></details>
+        <% } %>
+        <% if (latestRun.test_log) { %>
+          <details><summary>Test log</summary><pre class="pipeline-log"><%= latestRun.test_log %></pre></details>
+        <% } %>
+      <% } %>
     <% } %>
   </main>
 <%- include('partials/foot') %>

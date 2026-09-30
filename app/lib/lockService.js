@@ -36,4 +36,16 @@ async function acquireLock(repoId, coNumber, sessionId, userId) {
   }
 }
 
-module.exports = { acquireLock };
+// releaseLock(...) - only called on a session's successful pipeline
+// completion (see ROADMAP.md Phase 7). A failed session keeps the lock held,
+// same as its kept-alive container, until it succeeds or a later phase's
+// retry/abandon logic releases it.
+async function releaseLock(repoId, coNumber, sessionId) {
+  await db.query('DELETE FROM pipeline_locks WHERE repo_id = ? AND co_number = ? AND session_id = ?', [
+    repoId,
+    coNumber,
+    sessionId,
+  ]);
+}
+
+module.exports = { acquireLock, releaseLock };

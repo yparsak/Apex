@@ -19,6 +19,7 @@ DB_PASSWORD ?= apex_dev_password
 DB_ROOT_PASSWORD ?= apex_dev_root_password
 
 APP_CONTAINER := apex-app
+WORKER_CONTAINER := apex-worker
 PORT ?= 3000
 NODE_IMAGE := docker.io/library/node:22-slim
 
@@ -28,7 +29,7 @@ NODE_IMAGE := docker.io/library/node:22-slim
 # rootless Podman, which already maps to the host user.
 RUN_AS_HOST_USER := --user "$$(id -u):$$(id -g)" -e HOME=/tmp
 
-.PHONY: setup network db-up db-wait migrate install dev stop create-admin logs db-down clean
+.PHONY: setup network db-up db-wait migrate install dev worker stop create-admin logs db-down clean
 
 setup: network db-up db-wait migrate install
 	@echo ""
@@ -70,11 +71,28 @@ dev: db-up
 	  $(NODE_IMAGE) npx nodemon app.js
 	@echo "Apex starting at http://localhost:$(PORT) (container: $(APP_CONTAINER))"
 
+# Phase 7: runs worker.js, which polls for queued AI-pipeline sessions and
+# drives each one's ephemeral sandbox container. Needs the host's Docker
+# socket bind-mounted (Docker-outside-of-Docker - this container's own
+# sandbox containers are created as siblings on the *host* daemon, not nested
+# inside this container) and the docker CLI + git installed on top of the
+# stock Node image, so it runs as root rather than RUN_AS_HOST_USER: apt-get
+# install needs root, and root also sidesteps having to match this container's
+# uid/gid against the host socket's owning group.
+worker: db-up
+	@$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
+	$(RUNTIME) run -d --name $(WORKER_CONTAINER) --network $(NETWORK) \
+	  -v "$(CURDIR)":/app -w /app -v /var/run/docker.sock:/var/run/docker.sock \
+	  --env-file .env $(NODE_IMAGE) \
+	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git >/dev/null && npx nodemon worker.js"
+	@echo "Apex pipeline worker started (container: $(WORKER_CONTAINER))"
+
 logs:
 	$(RUNTIME) logs -f $(APP_CONTAINER)
 
 stop:
 	$(RUNTIME) rm -f $(APP_CONTAINER) 2>/dev/null || true
+	$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
 
 db-down:
 	$(RUNTIME) rm -f $(DB_CONTAINER) 2>/dev/null || true

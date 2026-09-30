@@ -109,10 +109,11 @@ async function renderBranchPage(req, res, access, branch, session, error) {
   ]);
   const lockHeld = !!lock && lock.session_id === session.id;
 
-  const [branches, conversation, [requirements]] = await Promise.all([
+  const [branches, conversation, [requirements], [[latestRun]]] = await Promise.all([
     branchService.listActiveBranches(access.repo, access.org),
     clarificationService.getConversation(session.id),
     db.query('SELECT * FROM session_requirements WHERE session_id = ? ORDER BY id ASC', [session.id]),
+    db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [session.id]),
   ]);
 
   const pendingRequirement = requirements.find((r) => r.confirm_status === 'pending_confirm') || null;
@@ -123,6 +124,15 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     ]);
     overlapRequirement = row || null;
   }
+
+  // Eligible for Phase 7's "Run Pipeline" trigger once every requirement has
+  // resolved out of pending_confirm and at least one is actually confirmed to
+  // proceed - the full "Approve & Implement" gate (re-opening on new
+  // instructions, etc.) is Phase 8 scope; this is the minimal stand-in that
+  // gets a session into 'queued' for worker.js to pick up.
+  const hasConfirmedRequirement = requirements.some((r) => r.confirm_status === 'confirmed_proceed');
+  const eligibleForPipeline =
+    lockHeld && session.status === 'awaiting_approval' && !pendingRequirement && hasConfirmedRequirement;
 
   res.render('branch', {
     user: req.session.user,
@@ -136,6 +146,8 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     requirements,
     pendingRequirement,
     overlapRequirement,
+    latestRun,
+    eligibleForPipeline,
     error,
   });
 }
@@ -186,6 +198,36 @@ router.post('/:repoId/branches/:branchId/messages', async (req, res) => {
     // resubmits a new message rather than losing their input.
     return renderBranchPage(req, res, access, branch, session, err.message);
   }
+
+  res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+});
+
+router.post('/:repoId/branches/:branchId/run-pipeline', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
+    access.repo.id,
+    branch.co_number,
+  ]);
+  const [requirements] = await db.query('SELECT confirm_status FROM session_requirements WHERE session_id = ?', [
+    session.id,
+  ]);
+  const hasPending = requirements.some((r) => r.confirm_status === 'pending_confirm');
+  const hasConfirmed = requirements.some((r) => r.confirm_status === 'confirmed_proceed');
+  const eligible =
+    lock && lock.session_id === session.id && session.status === 'awaiting_approval' && !hasPending && hasConfirmed;
+
+  if (!eligible) {
+    return renderBranchPage(req, res, access, branch, session, 'This session is not eligible to run the pipeline yet.');
+  }
+
+  await db.query("UPDATE sessions SET status = 'queued' WHERE id = ?", [session.id]);
+  await auditLog.logAction({ sessionId: session.id, userId: req.session.user.id, action: 'pipeline_queued' });
 
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
