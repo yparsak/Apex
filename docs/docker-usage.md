@@ -1,0 +1,85 @@
+# How Docker is used in Apex
+
+Docker shows up in two unrelated roles in this codebase: running the app's own
+supporting services during development, and running each AI pipeline session's
+sandboxed code execution. This document covers both.
+
+## 1. Infrastructure containers (dev environment)
+
+Driven entirely by the `Makefile`. Docker runs the app's own supporting processes as
+long-lived containers on a shared `apex-net` network:
+
+- `apex-mariadb` — the database (`make db-up`).
+- `apex-app` — the Express app itself, running `nodemon app.js` (`make dev`).
+- `apex-worker` — `worker.js`, the AI-pipeline poller (`make worker`).
+- `apex-spec-doc-worker` — `specDocWorker.js`, the Spec/Communication Protocol doc
+  regeneration loop (`make spec-doc-worker`).
+
+All of these bind-mount the repo into the container and run off the stock
+`node:22-slim` image — there's no custom Dockerfile for the app itself. Most targets
+run as the invoking host user (`RUN_AS_HOST_USER`) so bind-mounted files (e.g.
+`node_modules`) aren't left owned by root on a rootful Docker daemon.
+
+## 2. Ephemeral sandbox containers (per-session code execution)
+
+This is the more interesting half, built in Phase 7 of [ROADMAP.md](../ROADMAP.md).
+Every AI pipeline session (clone → codegen → build → test → push) runs inside its own
+throwaway container, driven by
+[`app/lib/docker/dockerRunner.js`](../app/lib/docker/dockerRunner.js) — a thin wrapper
+that shells out to the `docker` CLI (`child_process.spawn`), not a Docker SDK client,
+consistent with this project's "plain Docker containers" stack decision.
+
+Lifecycle, orchestrated by
+[`app/lib/pipeline/pipelineRunner.js`](../app/lib/pipeline/pipelineRunner.js):
+
+- **Created** from each repo's own declared image (`apex.pipeline.json`'s `image`
+  field — the runner never invents a default). Started with
+  `--entrypoint sleep ... infinity` so it just stays alive for the `docker exec` calls
+  that follow, rather than running the image's own default command.
+- **Network is a per-step toggle, not a fixed container property**: open during
+  clone/codegen (so the model adapter can reach NIM, and the sandbox can reach
+  GitHub), then `docker network disconnect` seals it before build/test run — so a
+  repo's build/test commands have no registry egress (npm/PyPI/Maven/etc.) once
+  sealed. Repos must vendor/cache all dependencies up front for this reason.
+- **Writes, build, and test** all happen via `docker exec` into the container; nothing
+  is bind-mounted from the host for the sandboxed code itself. File writes are
+  streamed over stdin (`sh -c 'mkdir -p ... && cat > ...'`) rather than embedded in an
+  argv string, avoiding shell-escaping and `ARG_MAX` issues.
+- **Push happens via the host, not the container**: after tests pass, the container's
+  already-committed working tree is pulled out with `docker cp` into a host temp dir,
+  and the *host* process pushes it with plain `git`. The write-capable GitHub push
+  token never enters the sandbox — only a `contents: read`-scoped clone token is used
+  inside the container.
+- **Kept alive on failure**: a failing container is *not* torn down immediately.
+  `pipeline_runs.container_id` keeps pointing at it so Phase 9's "resume from failed
+  step" can `docker exec` back into the same container and continue from the last
+  successful step (reusing whatever that step already produced), rather than
+  re-running the whole pipeline from scratch. Capped at 3 resume attempts
+  (`resume_attempt_count`); past that, the container is torn down and the session
+  falls back to a full from-scratch retry. A container is only `docker rm -f`'d on
+  success, resume-limit exhaustion, or explicit retry/abandonment — there's currently
+  no timeout-based cleanup for a container that's simply never retried and never
+  explicitly abandoned (see ROADMAP.md's Open/future list).
+
+## Docker-outside-of-Docker
+
+`worker.js` itself runs inside the `apex-worker` container, so the sandbox containers
+it creates need to be *siblings* on the host's Docker daemon, not nested inside
+`apex-worker`. The `worker` Makefile target bind-mounts the host's
+`/var/run/docker.sock` into the worker container and installs the `docker` CLI + `git`
+on top of the stock Node image. This is also why `apex-worker` runs as root instead of
+`RUN_AS_HOST_USER`: `apt-get install` needs root, and root sidesteps having to match
+the container's uid/gid against the host socket's owning group.
+
+It's also why sandbox containers clone into their own internal filesystem rather than
+a bind-mounted host directory — a host path specified from inside the worker
+container wouldn't resolve correctly against the host daemon that actually creates the
+sibling sandbox container.
+
+## Where Docker is *not* involved
+
+- `apex-app` (the web process) never touches the Docker socket or creates sandbox
+  containers directly — only `worker.js` does, consistent with the
+  Docker-outside-of-Docker setup above.
+- `specDocWorker.js` doesn't use Docker/sandboxing at all — it only needs GitHub and
+  NIM network access, so it runs on the plain Node image the same way `make dev` does.

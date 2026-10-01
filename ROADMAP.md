@@ -1,4 +1,4 @@
-# Apex — Build Roadmap
+   # Apex — Build Roadmap
 
 This is the forward build plan for Apex, derived from the target spec in
 [notes.md](notes.md). `notes.md` describes a system whose Phases 0–7 were already
@@ -402,6 +402,22 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
   (append-only) - rather than two separate admin nav items, since they're two views of
   the same underlying concern and the roadmap's two API paths map cleanly onto two
   sections of one page.
+
+## Phase 11 — Self-service passwords & default-password user creation
+
+Not in notes.md's original scope; added because password management today is entirely
+admin-driven (admin sets a password at user-creation time; there's no path for a user to
+change their own password after the fact).
+
+- Self-service password change: a page (reachable by any logged-in user, not just
+  admins) where a user updates their own password. Scope this to the user's own account
+  only — not a replacement for the existing admin-driven user management screens.
+- `DEFAULT_USER_PASSWORD` env variable (`.env` / `.env.example`). When an admin creates a
+  new user:
+  - If set, the new user is created with this value as their password (admin no longer
+    enters a password on the create-user form for this case).
+  - If blank/unset, today's behavior is unchanged — the admin enters a password for the
+    new user on the create-user form.
 
 ## Open / future (not scheduled)
 
