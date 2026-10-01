@@ -7,7 +7,7 @@
       <p class="placeholder">No AI session currently holds a pipeline lock.</p>
     <% } else { %>
       <table class="admin-table">
-        <thead><tr><th>Repo</th><th>CO</th><th>Held by</th><th>Session status</th><th>Since</th></tr></thead>
+        <thead><tr><th>Repo</th><th>CO</th><th>Held by</th><th>Session status</th><th>Since</th><th></th></tr></thead>
         <tbody>
           <% activeLocks.forEach(function(l) { %>
           <tr>
@@ -16,6 +16,11 @@
             <td><%= l.holder_username %></td>
             <td><%= l.session_status %></td>
             <td><%= l.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+            <td>
+              <form method="POST" action="/admin/locks/<%= l.id %>/force-unlock" class="row-form">
+                <button type="submit" class="danger-button">Force unlock</button>
+              </form>
+            </td>
           </tr>
           <% }) %>
         </tbody>

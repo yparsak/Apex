@@ -9,7 +9,12 @@ async function renderUsers(req, res, error) {
   const [users] = await db.query(
     'SELECT id, username, initials, is_admin, created_at FROM users ORDER BY username'
   );
-  res.render('admin/users', { user: req.session.user, users, error });
+  res.render('admin/users', {
+    user: req.session.user,
+    users,
+    error,
+    defaultPasswordSet: Boolean(process.env.DEFAULT_USER_PASSWORD),
+  });
 }
 
 router.get('/', async (req, res) => {
@@ -18,7 +23,10 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   const username = (req.body.username || '').trim();
-  const password = req.body.password || '';
+  // Phase 11: DEFAULT_USER_PASSWORD, when set, replaces the admin-entered
+  // password on the create-user form (see ROADMAP.md Phase 11). Blank/unset
+  // leaves today's behavior - the admin's own form input - unchanged.
+  const password = process.env.DEFAULT_USER_PASSWORD || req.body.password || '';
   const initials = (req.body.initials || '').trim().toUpperCase();
   const isAdmin = req.body.is_admin === 'on';
 

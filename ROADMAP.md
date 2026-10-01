@@ -434,6 +434,31 @@ Not in notes.md's original scope.
   `failed` session nobody but its original owner can touch), or just removes the lock
   row and leaves the orphaned session as-is.
 
+**Implementation notes (decisions made while building this phase):**
+- **Force-unlock takes the simpler of the two undecided options**: it only deletes the
+  `pipeline_locks` row (`lockService.forceReleaseLock`, keyed by the lock's own `id`,
+  not `(repo_id, co_number, session_id)` like `releaseLock`) and leaves the orphaned
+  session's `status` untouched. The session still shows as `failed` and is still only
+  actionable by its original owner via `/retry`/`/resume` — this phase only frees the
+  lock slot so a *different* session can proceed on that `(repo_id, co_number)`.
+- **No schema changes** — `pipeline_locks` already had everything needed; the action is
+  a plain `DELETE ... WHERE id = ?` from `POST /admin/locks/:id/force-unlock`,
+  audit-logged via the existing `admin_audit_log` path (`action: 'lock.force_unlock'`),
+  same as the rest of the admin surface.
+- **Self-service password change reuses `authProvider.authenticate`** to verify the
+  current password rather than calling `bcrypt.compare` directly — the route already
+  has the session's own `username`, so this is the same contract Phase 1's login flow
+  uses, just invoked a second time inline before `userService.updatePassword` hashes and
+  writes the new one.
+- **`DEFAULT_USER_PASSWORD` is read directly from `process.env` in the route handler**,
+  not threaded through `userService.createUser` — that function's signature
+  (`{ username, password, initials, isAdmin }`) stays exactly as `scripts/createUser.js`
+  already calls it; only `app/routes/admin/users.js`'s `POST /` substitutes the env value
+  for the form field before calling it, and `admin/users.ejs` hides the password input
+  (showing a note instead) whenever it's set. The CLI bootstrap script is unaffected —
+  it's always invoked with an explicit `--password`, before any admin user or env
+  convention exists to default from.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

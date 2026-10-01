@@ -88,4 +88,20 @@ async function listContentionEvents({ limit = 200 } = {}) {
   return rows;
 }
 
-module.exports = { acquireLock, releaseLock, listActiveLocks, listContentionEvents };
+// forceReleaseLock(...) - admin override for a stuck lock (see ROADMAP.md
+// Phase 11): unlike releaseLock, which only ever runs from a successful
+// pipeline completion for that exact (repo_id, co_number, session_id), this
+// deletes by the lock's own id regardless of session outcome, for the case
+// where the session that holds it can no longer be retried/resumed by its
+// original owner. Returns the deleted row (for audit-log detail) or null if
+// it was already gone. Leaves the orphaned session's own status untouched -
+// this only frees the (repo, CO) slot, per the roadmap's "simpler" option
+// where that's still explicitly left undecided.
+async function forceReleaseLock(lockId) {
+  const [[lock]] = await db.query('SELECT * FROM pipeline_locks WHERE id = ?', [lockId]);
+  if (!lock) return null;
+  await db.query('DELETE FROM pipeline_locks WHERE id = ?', [lockId]);
+  return lock;
+}
+
+module.exports = { acquireLock, releaseLock, listActiveLocks, listContentionEvents, forceReleaseLock };

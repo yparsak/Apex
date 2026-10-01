@@ -12,4 +12,13 @@ async function createUser({ username, password, initials, isAdmin = false }) {
   return result.insertId;
 }
 
-module.exports = { createUser };
+// Self-service password change (see ROADMAP.md Phase 11) - caller is
+// responsible for verifying the user's current password first (via
+// authProvider.authenticate), same as createUser leaves hashing as the only
+// concern here.
+async function updatePassword(userId, newPassword) {
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
+}
+
+module.exports = { createUser, updatePassword };

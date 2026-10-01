@@ -5,6 +5,7 @@ const session = require('express-session');
 const MySQLStore = require('express-mysql-session')(session);
 
 const authRoutes = require('./app/routes/auth');
+const accountRoutes = require('./app/routes/account');
 const homeRoutes = require('./app/routes/home');
 const adminRoutes = require('./app/routes/admin');
 const reposRoutes = require('./app/routes/repos');
@@ -52,6 +53,7 @@ app.use(
 );
 
 app.use(authRoutes);
+app.use(accountRoutes);
 app.use(homeRoutes);
 app.use('/admin', adminRoutes);
 app.use('/repos', reposRoutes);

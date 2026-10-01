@@ -29,7 +29,11 @@
     <h2>New user</h2>
     <form method="POST" action="/admin/users" class="stacked-form">
       <label>Username <input type="text" name="username" required></label>
-      <label>Password <input type="password" name="password" required></label>
+      <% if (defaultPasswordSet) { %>
+        <p class="placeholder">New users will be created with the default password (DEFAULT_USER_PASSWORD).</p>
+      <% } else { %>
+        <label>Password <input type="password" name="password" required></label>
+      <% } %>
       <label>Initials <input type="text" name="initials" maxlength="10" required></label>
       <label class="checkbox-label"><input type="checkbox" name="is_admin"> Admin</label>
       <button type="submit">Create</button>
