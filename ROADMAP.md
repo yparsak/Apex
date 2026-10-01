@@ -403,21 +403,36 @@ exists (clarifying from Phase 5; approval/queued/running/completed/failed from P
   the same underlying concern and the roadmap's two API paths map cleanly onto two
   sections of one page.
 
-## Phase 11 — Self-service passwords & default-password user creation
+## Phase 11 — Self-service passwords, default-password user creation, & admin lock override
 
-Not in notes.md's original scope; added because password management today is entirely
-admin-driven (admin sets a password at user-creation time; there's no path for a user to
-change their own password after the fact).
+Not in notes.md's original scope.
 
 - Self-service password change: a page (reachable by any logged-in user, not just
   admins) where a user updates their own password. Scope this to the user's own account
   only — not a replacement for the existing admin-driven user management screens.
+  Added because password management today is entirely admin-driven (admin sets a
+  password at user-creation time; there's no path for a user to change their own
+  password after the fact).
 - `DEFAULT_USER_PASSWORD` env variable (`.env` / `.env.example`). When an admin creates a
   new user:
   - If set, the new user is created with this value as their password (admin no longer
     enters a password on the create-user form for this case).
   - If blank/unset, today's behavior is unchanged — the admin enters a password for the
     new user on the create-user form.
+- Admin "force-unlock" action for a stuck `pipeline_locks` row. Today a lock is only
+  ever released by `lockService.releaseLock`, called exclusively from a successful
+  pipeline completion (see Phase 4/7) — a failed session deliberately keeps the lock
+  held so it can still be retried/resumed (see `lockService.js`). But `/retry` and
+  `/resume` are scoped to the session's own `(branch_id, user_id)`
+  (`loadBranchSession`), so if the original user who started that session is
+  unavailable (gone, account disabled, can't be impersonated), nobody — not even an
+  admin — has any way to unblock that `(repo_id, co_number)` for a different session.
+  Surface this on the existing `/admin/locks` dashboard (Phase 10), which today is
+  read-only: an explicit action that deletes the stale `pipeline_locks` row so a new
+  session can proceed. Still undecided: whether this also force-marks the orphaned
+  session as some terminal/abandoned state (so it stops showing as an actionable
+  `failed` session nobody but its original owner can touch), or just removes the lock
+  row and leaves the orphaned session as-is.
 
 ## Open / future (not scheduled)
 

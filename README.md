@@ -77,3 +77,12 @@ view in the UI to see that, not `docker logs`.
 - `specDocWorker.js` — Spec/Communication Protocol doc regeneration loop.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.
+
+## Connect to Database
+```
+docker exec -it apex-mariadb mariadb -uroot -p<rootpass> apex
+
+docker exec -it apex-mariadb mariadb -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d'=' -f2)" "$(grep '^DB_NAME=' .env | cut -d'=' -f2)"
+
+```
+
