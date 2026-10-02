@@ -459,6 +459,117 @@ Not in notes.md's original scope.
   it's always invoked with an explicit `--password`, before any admin user or env
   convention exists to default from.
 
+## Phase 12 — Operational logging: rotation + structured app logs
+
+Not in notes.md's original scope.
+
+- **Docker-level log rotation**, so `docker logs`/`podman logs` for `apex-app`,
+  `apex-worker`, and `apex-spec-doc-worker` stop growing unbounded: `--log-opt
+  max-size=10m --log-opt max-file=3` added to each container's `run` invocation in the
+  Makefile. Zero application code changes; a safety net independent of the structured
+  logging work below, not a replacement for it.
+- **Structured app-level logging**, replacing the current scattered `console.log`/
+  `console.error` calls across `app.js`, `worker.js`, `specDocWorker.js`, and
+  `pipelineRunner.js` with a leveled, structured logger ([pino](https://github.com/pinojs/pino)):
+  - Levels (`debug`/`info`/`warn`/`error`) instead of one undifferentiated stream, so
+    e.g. the routine `[worker] running pipeline for session N` lifecycle noise can be
+    filtered out from actual failures.
+  - Structured fields (`sessionId`, `repoId`, `coNumber`, `stage` where applicable)
+    attached to each log line, not just baked into a formatted string — makes a
+    session's full lifecycle greppable by id across clone/codegen/build/test/push,
+    not just whatever happens to be in the message text today.
+  - Still writes to stdout too (so `docker logs`/`podman logs` keep working unchanged),
+    in addition to the rotated file below — not instead of it.
+- **Rotated file output into a repo-visible `logs/` directory**, bind-mounted the same
+  way the app/worker containers already bind-mount the repo (via `pino-roll` or
+  equivalent — size- and/or date-based rotation) — so logs survive container
+  recreation and are directly `grep`-able from the host without going through `docker
+  exec`/`docker logs`. `logs/` added to `.gitignore`: generated output, not something
+  to commit.
+- **`LOG_RETENTION_DAYS` env variable** (`.env` / `.env.example`), governing a purge
+  sweep over rotated files in `logs/` — anything older than this many days is deleted.
+  Defaults to **3** when unset, so a dev environment doesn't need to set anything to
+  get bounded disk usage. This is a separate mechanism from Docker's own
+  `--log-opt max-file` count-based rotation above (which stays as-is, unaffected by
+  this variable) — `LOG_RETENTION_DAYS` only prunes the app-level files this phase
+  adds under `logs/`.
+
+Open / undecided for this phase:
+- Per-process log files (`logs/app.log`, `logs/worker.log`,
+  `logs/spec-doc-worker.log`) vs. one combined file — leaning per-process, since the
+  three processes' concerns rarely overlap, but not decided yet.
+- Where the purge sweep itself runs from — a `setInterval` inside each long-running
+  process (`app.js`/`worker.js`/`specDocWorker.js`), or one small standalone script
+  invoked periodically (cron-like, the same open question Phase 8 already has for
+  `specDocWorker.js`'s own interval) — not decided yet.
+- Whether to cross-reference this operational logging with the pipeline-run logs
+  already persisted in MariaDB and surfaced on the branch page
+  (`pipeline_runs.build_log`/`test_log`, since Phase 9) — e.g. a `runId` field on
+  structured log lines emitted during that run — or keep the two entirely separate.
+  This phase assumes they stay separate unless that proves awkward in practice.
+
+## Phase 13 — Branch page requirements-log panel & branch lifecycle management
+
+Not in notes.md's original scope.
+
+- **Branch detail page becomes a three-panel layout**
+  (`/repos/:repoId/branches/:branchId`): existing left sidebar (branch nav, unchanged)
+  + center panel (existing clarification/pipeline content, unchanged) + a new **right
+  panel**, a little wider than the left sidebar, showing the Requirements Log entries
+  already recorded for this branch's CO — so a user drafting a new requirement can see
+  at a glance what's already been implemented on this CO, without leaving the page or
+  going to the separate Documents view.
+  - Reuses the existing `repo_documents`/`requirementsLogFormat.js` machinery (Phase
+    8) rather than a new store: the right panel fetches this repo's
+    `requirements_log` doc and extracts just the `## CO <this CO>` section via
+    `parseSections` — the same mechanism `documentsService.searchByCoNumber` already
+    uses for the cross-repo search, scoped here to one repo instead of every
+    accessible repo.
+  - Read-only panel; it never writes back into `session_requirements` (the branch's
+    own in-progress requirement list, unaffected, stays in the center panel as today).
+- **Repositories → selected repo page gets a branch-management table** at the bottom
+  (`/repos/:repoId`), below the existing "Start new branch" form, with **Active** and
+  **Stale** tabs:
+  - **Active tab**: the repo's active/in-progress branches (today's sidebar/branch
+    list content, surfaced here too in table form).
+  - **Stale tab**: branches the user has explicitly deactivated. Each row gets a
+    **Reactivate** button, moving it back to Active.
+  - **Delete** action (user-initiated) and Phase 4's *automatic* on-demand
+    GitHub-existence check (`branchService.listActiveBranches`, today flips a missing
+    branch to `status='deleted'`) are unified to the same outcome, but as a **soft
+    delete**, not a row removal: both paths converge on `status='deleted'`, meaning
+    "hidden from the UI, permanently" — whether Apex detects the branch is gone on
+    GitHub itself, or the user explicitly deletes it here. The row stays, so
+    `sessions` / `session_requirements` / `pipeline_runs` / `audit_log` history tied
+    to that branch is untouched and intact (no FK fallout, no lost build/test logs),
+    it's just unreachable from the UI going forward. If a user wants to add more to
+    the same CO after its branch is deleted, they create a new branch on that CO,
+    same as today.
+  - Consistent with (and reinforced by) Phase 3's GitHub App scope, which was never
+    granted delete/admin permissions in the first place — this never touches the
+    branch on GitHub regardless of which of the two paths triggered it.
+  - `branches.status` becomes `active` / `stale` / `deleted` — `deleted` now has one
+    consistent meaning regardless of trigger (today it's Phase 4's automatic case
+    only), resolving the earlier naming-collision concern rather than needing a new
+    value for it.
+  - No "undelete" path is offered — unlike `stale`, `deleted` is a one-way door from
+    the UI's perspective (matches "if a branch is deleted, it should no longer
+    display that branch" with no mention of bringing it back). The row surviving in
+    the DB is for history/audit purposes only, same spirit as Phase 11's force-unlock
+    leaving an orphaned session's row untouched rather than deleting it.
+
+Open / undecided for this phase:
+- Whether "Reactivate" on a `stale` branch needs the same GitHub-existence re-check
+  Phase 4/7 already do at branch-list-render and session-start time (a branch could
+  have been deleted on GitHub by someone else while it sat in Stale) — not decided
+  yet.
+- Exact right-panel width split (e.g. 220px left sidebar / flexible center / ~300–
+  320px right panel) — a concrete ratio needs picking at implementation time; this
+  phase only commits to "a little larger than the left panel."
+- Whether a branch with a non-terminal session (`running`, or `queued` holding the
+  pipeline lock) can be deactivated/deleted at all, or whether that's blocked until
+  the session reaches a terminal state — not decided yet.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
