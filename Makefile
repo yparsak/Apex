@@ -79,13 +79,18 @@ dev: db-up
 # inside this container) and the docker CLI + git installed on top of the
 # stock Node image, so it runs as root rather than RUN_AS_HOST_USER: apt-get
 # install needs root, and root also sidesteps having to match this container's
-# uid/gid against the host socket's owning group.
+# uid/gid against the host socket's owning group. ca-certificates is explicit
+# here, not implicit via git's package dependencies: --no-install-recommends
+# drops it (it's only a Recommends of the git package on Debian), and
+# node:22-slim doesn't ship it either - without it, pushService.js's host-side
+# `git push` to github.com fails with "server certificate verification
+# failed. CAfile: none CRLfile: none".
 worker: db-up
 	@$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) run -d --name $(WORKER_CONTAINER) --network $(NETWORK) \
 	  -v "$(CURDIR)":/app -w /app -v /var/run/docker.sock:/var/run/docker.sock \
 	  --env-file .env $(NODE_IMAGE) \
-	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git >/dev/null && npx nodemon worker.js"
+	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git ca-certificates >/dev/null && npx nodemon worker.js"
 	@echo "Apex pipeline worker started (container: $(WORKER_CONTAINER))"
 
 # Phase 8: runs specDocWorker.js on its own interval loop, decoupled from
