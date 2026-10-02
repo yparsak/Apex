@@ -508,6 +508,48 @@ Open / undecided for this phase:
   structured log lines emitted during that run — or keep the two entirely separate.
   This phase assumes they stay separate unless that proves awkward in practice.
 
+**Implementation notes (decisions made while building this phase):**
+- **Per-process log files, resolved**: `app/lib/logger.js`'s `createLogger(name)`
+  takes `'app'`/`'worker'`/`'spec-doc-worker'` and each writes its own
+  `logs/<name>.log` via `pino-roll` (size `10m` + daily rotation combined), alongside
+  an unchanged stdout stream (`pino/file` targeting fd 1) so `docker logs`/`podman
+  logs` keep working exactly as before.
+- **Purge sweep, resolved**: `app/lib/logRetention.js`'s `schedulePurge()` runs an
+  hourly `setInterval` inside each of the three long-running processes themselves
+  (called once from `app.js`, `worker.js`, and `specDocWorker.js`) rather than a
+  standalone script — all three already run forever, and a redundant sweep from more
+  than one process is harmless (deleting an already-purged file is a no-op). Reads
+  `LOG_RETENTION_DAYS` (default **3**) and deletes any file under `logs/` whose mtime
+  is older than that many days.
+- **Operational logs vs. `pipeline_runs.build_log`/`test_log` stay separate**, per
+  the default this phase already called out — no `runId` field was added; structured
+  pipeline log lines carry `sessionId`/`repoId`/`coNumber`/`stage` instead (see below),
+  which was enough to make a session's lifecycle greppable without joining back to a
+  specific `pipeline_runs` row.
+- **`createLogger(name)` caches one pino instance per name**, not a fresh one per
+  call: `specDocService.js`'s one remaining stray `console.error` (a job-failure log
+  inside `drainQueuedJobs`) also moved to the structured logger, under the same
+  `'spec-doc-worker'` name `specDocWorker.js` uses. Two independent `pino-roll`
+  transports targeting the same `logs/spec-doc-worker.log` would each track their own
+  rolling-file-index state and race each other, so same-name callers must share one
+  underlying instance rather than each constructing their own.
+- **`pipelineRunner.js` builds one child logger per session** (`sessionId`, `repoId`,
+  `coNumber`) immediately after `loadContext` succeeds in both `run()` and `resume()`,
+  threaded through to `setStage()` (which now logs the transition itself, in addition
+  to its existing `pipeline_runs.stage` write) and `finishSuccessfully()`. This piggybacks
+  on the exact same call sites Phase 9's stepper already uses to track stage, rather
+  than adding a parallel set of logging calls.
+- **No extra bind mount needed for `logs/`**: the app/worker/spec-doc-worker
+  containers already bind-mount the full repo (`-v "$(CURDIR)":/app"`, see Makefile),
+  so a file written to `logs/<name>.log` from inside any of them lands directly in the
+  repo's own `logs/` directory on the host, survives container recreation, and is
+  `grep`-able without `docker exec`/`docker logs` — matching the Phase 10 admin-API
+  precedent of reusing what's already there instead of adding new plumbing.
+- **Docker-level rotation flags land on exactly the three app-level Makefile
+  targets** (`dev`, `worker`, `spec-doc-worker`) — `db-up`'s `apex-mariadb` container
+  is unaffected, consistent with the roadmap's explicit `apex-app`/`apex-worker`/
+  `apex-spec-doc-worker` scope and MariaDB's own logging being a separate concern.
+
 ## Phase 13 — Branch page requirements-log panel & branch lifecycle management
 
 Not in notes.md's original scope.
@@ -569,6 +611,59 @@ Open / undecided for this phase:
 - Whether a branch with a non-terminal session (`running`, or `queued` holding the
   pipeline lock) can be deactivated/deleted at all, or whether that's blocked until
   the session reaches a terminal state — not decided yet.
+
+## Phase 14 — Usage/cost reporting & model-provider circuit breaker
+
+Not in notes.md's original scope.
+
+- **Model adapter contract change**: `generate()` returns `{text, usage}` instead of a
+  bare string, so token usage (currently parsed off NIM's response and discarded, even
+  though the API already returns it) is captured for every call site
+  (`overlapService.js`, `clarificationService.js`, `codegenService.js`,
+  `specDocService.js`) instead of just this one.
+- **New `usage_events` table**, append-only, one row per model call: timestamp,
+  call_site, session/org/repo attribution, provider, model, input_tokens,
+  output_tokens, cache tokens (for providers that report them), and `cost_usd` computed
+  at write time from a pricing lookup — not derived later, so historical rows stay
+  accurate if pricing changes.
+- **Small pricing config**, `model -> $/MTok input, $/MTok output[, cache rates]`. The
+  current NIM model resolves to $0 (self-hosted/free), which keeps the schema and
+  dashboard provider-agnostic ahead of ever adding a second adapter — see "Non-NIM model
+  provider" under Open/future.
+- **New admin page** ("Usage"), alongside the existing Orgs/Repos/Permissions/Alerts/
+  Locks screens:
+  - Summary cards (total tokens, total cost, total requests, avg cost/request) over a
+    date range.
+  - Breakdown by org/repo-group and by call-site, to see which service is costing the
+    most.
+  - Trend over time.
+  - Reporting only for now — no spend caps or enforcement.
+- **Model-provider circuit breaker**: a shared health status per provider (`healthy` /
+  `warning` / `locked`, with a reason + timestamp), checked by `modelAdapter.js` before
+  attempting a call, so a known-exhausted provider fails fast with a clear message
+  instead of every in-flight call failing individually deep inside whichever service
+  called it. This matters because clarification/overlap calls from Phase 5 are not
+  serialized — several can be in flight across different users at once.
+  - **State must be DB-backed, not in-memory**: the model adapter is called from three
+    separate processes (`app.js`, `worker.js`, `specDocWorker.js` — see Phase 12), none
+    of which share memory, so a per-process flag wouldn't be visible across all of them.
+    Reuses MariaDB the same way `pipeline_locks`/`sessions` already coordinate
+    cross-process state, consistent with this project's "no Redis" stance (see Stack
+    decisions).
+  - Triggered by a provider error classified as quota/billing-related, as distinct from
+    a transient network error, which shouldn't lock anything.
+  - Surfaced on the same Usage admin page as a status indicator, not a separate screen.
+
+Open / undecided for this phase:
+- Whether locking should happen at pipeline *entry* (before `worker.js` starts a run) in
+  addition to the call-site check inside `modelAdapter.js`, to avoid leaving partial
+  pipeline state behind on an already-known-bad provider.
+- Recovery semantics: whether a lock auto-expires (e.g. a daily quota reset) or always
+  requires a manual admin "clear lock" action on the admin page.
+- Whether "credits" stays purely a reporting label for cost/tokens, or becomes an actual
+  allocated budget per org/repo-group later — this phase assumes reporting only.
+- Exact warning threshold (e.g. 80% of a known quota) before flipping to `warning`
+  state, if a hard quota is even knowable in advance for the provider in use.
 
 ## Open / future (not scheduled)
 

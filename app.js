@@ -11,7 +11,10 @@ const adminRoutes = require('./app/routes/admin');
 const reposRoutes = require('./app/routes/repos');
 const documentsRoutes = require('./app/routes/documents');
 const apiAdminRoutes = require('./app/routes/apiAdmin');
+const { createLogger } = require('./app/lib/logger');
+const logRetention = require('./app/lib/logRetention');
 
+const logger = createLogger('app');
 const app = express();
 
 app.set('view engine', 'ejs');
@@ -60,7 +63,9 @@ app.use('/repos', reposRoutes);
 app.use('/documents', documentsRoutes);
 app.use('/api/admin', apiAdminRoutes);
 
+logRetention.schedulePurge(logger);
+
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => {
-  console.log(`Apex listening on http://localhost:${port}`);
+  logger.info({ port }, 'Apex listening');
 });

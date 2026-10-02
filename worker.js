@@ -2,7 +2,10 @@ require('dotenv').config();
 
 const db = require('./app/lib/db');
 const pipelineRunner = require('./app/lib/pipeline/pipelineRunner');
+const { createLogger } = require('./app/lib/logger');
+const logRetention = require('./app/lib/logRetention');
 
+const logger = createLogger('worker');
 const POLL_INTERVAL_MS = Number(process.env.PIPELINE_POLL_INTERVAL_MS || 5000);
 
 function sleep(ms) {
@@ -24,24 +27,25 @@ async function pollOnce() {
   // the session 'queued', so this flag is the only signal worker.js has for
   // which of pipelineRunner's two entry points to call.
   if (next.resume_requested) {
-    console.log(`[worker] resuming pipeline for session ${next.id}`);
+    logger.info({ sessionId: next.id }, 'resuming pipeline for session');
     await pipelineRunner.resume(next.id);
   } else {
-    console.log(`[worker] running pipeline for session ${next.id}`);
+    logger.info({ sessionId: next.id }, 'running pipeline for session');
     await pipelineRunner.run(next.id);
   }
-  console.log(`[worker] finished session ${next.id}`);
+  logger.info({ sessionId: next.id }, 'finished session');
   return true;
 }
 
 async function main() {
-  console.log('[worker] Apex pipeline worker started');
+  logger.info('Apex pipeline worker started');
+  logRetention.schedulePurge(logger);
   for (;;) {
     let processed;
     try {
       processed = await pollOnce();
     } catch (err) {
-      console.error('[worker] poll error', err);
+      logger.error({ err }, 'poll error');
       processed = false;
     }
     if (!processed) await sleep(POLL_INTERVAL_MS);

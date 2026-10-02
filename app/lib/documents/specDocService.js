@@ -5,6 +5,9 @@
 const db = require('../db');
 const githubApi = require('../github/githubApi');
 const modelAdapter = require('../model/modelAdapter');
+const { createLogger } = require('../logger');
+
+const logger = createLogger('spec-doc-worker');
 
 const MAX_TREE_PATHS = 500;
 const MAX_FILE_CHARS = 8000;
@@ -78,7 +81,7 @@ async function drainQueuedJobs() {
       await db.query("UPDATE spec_doc_jobs SET status = 'completed' WHERE id = ?", [job.id]);
     } catch (err) {
       await db.query("UPDATE spec_doc_jobs SET status = 'failed' WHERE id = ?", [job.id]);
-      console.error(`[specDocService] job ${job.id} (repo ${job.repo_id}) failed:`, err.message);
+      logger.error({ jobId: job.id, repoId: job.repo_id, err }, 'spec doc job failed');
     }
   }
 }

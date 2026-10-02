@@ -65,9 +65,14 @@ create-admin: db-up
 	$(RUNTIME) run --rm --network $(NETWORK) -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) --env-file .env $(NODE_IMAGE) \
 	  node scripts/createUser.js $(ARGS)
 
+# Phase 12: --log-driver is explicit, not left to the daemon default - some
+# Podman configs default to journald, which silently ignores max-size/
+# max-file (they're json-file/k8s-file-only options), so `docker logs`/
+# `podman logs` would keep growing unbounded despite these flags being passed.
 dev: db-up
 	@$(RUNTIME) rm -f $(APP_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) run -d --name $(APP_CONTAINER) --network $(NETWORK) \
+	  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 	  -v "$(CURDIR)":/app -w /app -p $(PORT):$(PORT) $(RUN_AS_HOST_USER) --env-file .env \
 	  $(NODE_IMAGE) npx nodemon app.js
 	@echo "Apex starting at http://localhost:$(PORT) (container: $(APP_CONTAINER))"
@@ -88,6 +93,7 @@ dev: db-up
 worker: db-up
 	@$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) run -d --name $(WORKER_CONTAINER) --network $(NETWORK) \
+	  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 	  -v "$(CURDIR)":/app -w /app -v /var/run/docker.sock:/var/run/docker.sock \
 	  --env-file .env $(NODE_IMAGE) \
 	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git ca-certificates >/dev/null && npx nodemon worker.js"
@@ -100,6 +106,7 @@ worker: db-up
 spec-doc-worker: db-up
 	@$(RUNTIME) rm -f $(SPEC_DOC_WORKER_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) run -d --name $(SPEC_DOC_WORKER_CONTAINER) --network $(NETWORK) \
+	  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
 	  -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) --env-file .env \
 	  $(NODE_IMAGE) npx nodemon specDocWorker.js
 	@echo "Apex spec-doc worker started (container: $(SPEC_DOC_WORKER_CONTAINER))"

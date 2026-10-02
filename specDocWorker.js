@@ -2,7 +2,10 @@ require('dotenv').config();
 
 const specDocScanService = require('./app/lib/documents/specDocScanService');
 const specDocService = require('./app/lib/documents/specDocService');
+const { createLogger } = require('./app/lib/logger');
+const logRetention = require('./app/lib/logRetention');
 
+const logger = createLogger('spec-doc-worker');
 const INTERVAL_MS = Number(process.env.SPEC_DOC_SCAN_INTERVAL_MS || 5 * 60 * 1000);
 
 function sleep(ms) {
@@ -20,12 +23,13 @@ async function tick() {
 }
 
 async function main() {
-  console.log('[spec-doc-worker] started');
+  logger.info('started');
+  logRetention.schedulePurge(logger);
   for (;;) {
     try {
       await tick();
     } catch (err) {
-      console.error('[spec-doc-worker] tick error', err);
+      logger.error({ err }, 'tick error');
     }
     await sleep(INTERVAL_MS);
   }

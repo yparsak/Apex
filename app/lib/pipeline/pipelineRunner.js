@@ -13,6 +13,12 @@ const pipelineConfig = require('./pipelineConfig');
 const codegenService = require('./codegenService');
 const pushService = require('./pushService');
 const requirementsLogService = require('../documents/requirementsLogService');
+const { createLogger } = require('../logger');
+
+// pipelineRunner only ever runs inside worker.js's process (see
+// Docker-outside-of-Docker note in ROADMAP.md Phase 7), so it shares that
+// process's 'worker' log stream rather than taking a logger as a parameter.
+const logger = createLogger('worker');
 
 const WORKSPACE = '/workspace';
 const SANDBOX_NETWORK = process.env.SANDBOX_NETWORK || 'apex-net';
@@ -55,7 +61,8 @@ async function createRun(sessionId) {
   return result.insertId;
 }
 
-async function setStage(runId, stage) {
+async function setStage(runId, stage, log) {
+  log.info({ stage }, 'pipeline stage');
   await db.query('UPDATE pipeline_runs SET stage = ? WHERE id = ?', [stage, runId]);
 }
 
@@ -156,8 +163,8 @@ async function testStep(containerId, config) {
   return log;
 }
 
-async function finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog }) {
-  await setStage(runId, 'pushing');
+async function finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog, log }) {
+  await setStage(runId, 'pushing', log);
   const commitSha = await pushService.pushBranch({ containerId, workspacePath: WORKSPACE, org, repo, branch, sessionId });
 
   // Requirements log update is synchronous and inline, not queued/cron'd like
@@ -169,23 +176,25 @@ async function finishSuccessfully({ runId, sessionId, containerId, org, repo, br
   await db.query("UPDATE sessions SET status = 'completed' WHERE id = ?", [sessionId]);
   await lockService.releaseLock(repo.id, branch.co_number, sessionId);
   await auditLog.logAction({ sessionId, userId: session.user_id, action: 'pipeline_completed', detail: { commitSha } });
+  log.info({ commitSha }, 'pipeline completed');
   await dockerRunner.removeContainer(containerId);
 }
 
 // run(sessionId) - never throws; failures are recorded on the session/run
 // rows and swallowed so worker.js's poll loop keeps going.
 async function run(sessionId) {
-  let session, branch, repo, org, requirements, runId;
+  let session, branch, repo, org, requirements, runId, log;
   try {
     ({ session, branch, repo, org, requirements } = await loadContext(sessionId));
     runId = await createRun(sessionId);
+    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number });
     await db.query("UPDATE sessions SET status = 'running', resume_requested = FALSE WHERE id = ?", [sessionId]);
   } catch (err) {
     // Couldn't even start bookkeeping for this session - still must move it
     // out of 'queued', or worker.js's poll loop would retry the same broken
     // session forever.
     await db.query("UPDATE sessions SET status = 'failed' WHERE id = ?", [sessionId]).catch(() => {});
-    console.error(`[pipelineRunner] failed to start session ${sessionId}:`, err);
+    logger.error({ sessionId, err }, 'failed to start session');
     return;
   }
 
@@ -209,12 +218,12 @@ async function run(sessionId) {
 
     const config = await pipelineConfig.fetchPipelineConfig(org, repo, branch);
 
-    await setStage(runId, 'cloning');
+    await setStage(runId, 'cloning', log);
     containerId = await dockerRunner.createContainer(config.image, SANDBOX_NETWORK);
     await setContainerId(runId, containerId);
     await cloneStep(containerId, org, repo, branch);
 
-    await setStage(runId, 'codegen');
+    await setStage(runId, 'codegen', log);
     const requirementsText = requirements.map((r) => `- ${r.requirement_text}`).join('\n');
     await codegenStep({ containerId, org, repo, branch, requirementsText });
 
@@ -222,13 +231,13 @@ async function run(sessionId) {
     // registry egress once codegen's model-adapter calls are done.
     await dockerRunner.disconnectNetwork(containerId, SANDBOX_NETWORK);
 
-    await setStage(runId, 'building');
+    await setStage(runId, 'building', log);
     buildLog = await buildStep(containerId, config);
 
-    await setStage(runId, 'testing');
+    await setStage(runId, 'testing', log);
     testLog = await testStep(containerId, config);
 
-    await finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog });
+    await finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog, log });
   } catch (err) {
     // Container lifecycle on failure: kept alive, not torn down (see
     // ROADMAP.md Phase 7 / Phase 9's resume-from-step retry) - only the
@@ -238,6 +247,7 @@ async function run(sessionId) {
     await failRun(runId, { buildLog: err.buildLog || buildLog, testLog: err.testLog || testLog, errorMessage: err.message });
     await db.query("UPDATE sessions SET status = 'failed' WHERE id = ?", [sessionId]);
     await auditLog.logAction({ sessionId, userId: session.user_id, action: 'pipeline_failed', detail: err.message });
+    log.error({ err }, 'pipeline failed');
   }
 }
 
@@ -246,19 +256,20 @@ async function run(sessionId) {
 // whatever the last successfully completed step produced rather than
 // starting over. Never throws, same contract as run().
 async function resume(sessionId) {
-  let session, branch, repo, org, requirements, failedRun;
+  let session, branch, repo, org, requirements, failedRun, log;
   try {
     ({ session, branch, repo, org, requirements } = await loadContext(sessionId));
     const [[row]] = await db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [
       sessionId,
     ]);
     failedRun = row;
+    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number });
   } catch (err) {
     // Same failure mode as run()'s startup guard - a broken lookup here must
     // still move the session out of 'queued', or worker.js's poll loop would
     // retry it forever.
     await db.query("UPDATE sessions SET status = 'failed', resume_requested = FALSE WHERE id = ?", [sessionId]).catch(() => {});
-    console.error(`[pipelineRunner] failed to start resume for session ${sessionId}:`, err);
+    logger.error({ sessionId, err }, 'failed to start resume for session');
     return;
   }
 
@@ -287,7 +298,7 @@ async function resume(sessionId) {
 
     if (startingStage === 'cloning' || startingStage === 'codegen') {
       if (startingStage === 'cloning') {
-        await setStage(runId, 'cloning');
+        await setStage(runId, 'cloning', log);
         await cloneStep(containerId, org, repo, branch);
       }
 
@@ -300,31 +311,31 @@ async function resume(sessionId) {
       await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'checkout', '--', '.']);
       await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'clean', '-fd']);
 
-      await setStage(runId, 'codegen');
+      await setStage(runId, 'codegen', log);
       await codegenStep({ containerId, org, repo, branch, requirementsText });
 
       await dockerRunner.disconnectNetwork(containerId, SANDBOX_NETWORK);
 
-      await setStage(runId, 'building');
+      await setStage(runId, 'building', log);
       buildLog = await buildStep(containerId, config);
 
-      await setStage(runId, 'testing');
+      await setStage(runId, 'testing', log);
       testLog = await testStep(containerId, config);
     } else if (startingStage === 'building') {
-      await setStage(runId, 'building');
+      await setStage(runId, 'building', log);
       buildLog = await buildStep(containerId, config);
 
-      await setStage(runId, 'testing');
+      await setStage(runId, 'testing', log);
       testLog = await testStep(containerId, config);
     } else if (startingStage === 'testing') {
-      await setStage(runId, 'testing');
+      await setStage(runId, 'testing', log);
       testLog = await testStep(containerId, config);
     }
     // startingStage === 'pushing' (or fallen through from an earlier stage
     // above) always finishes with push - reusing the already-built/tested
     // commit is exactly the ROADMAP.md Phase 9 example.
 
-    await finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog });
+    await finishSuccessfully({ runId, sessionId, containerId, org, repo, branch, session, requirements, buildLog, testLog, log });
   } catch (err) {
     await failRun(runId, { buildLog: err.buildLog || buildLog, testLog: err.testLog || testLog, errorMessage: err.message });
 
@@ -339,6 +350,7 @@ async function resume(sessionId) {
 
     await db.query("UPDATE sessions SET status = 'failed' WHERE id = ?", [sessionId]);
     await auditLog.logAction({ sessionId, userId: session.user_id, action: 'pipeline_resume_failed', detail: err.message });
+    log.error({ err, resumeAttemptCount: updated.resume_attempt_count }, 'pipeline resume failed');
   }
 }
 

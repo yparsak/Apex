@@ -20,6 +20,15 @@ All of these bind-mount the repo into the container and run off the stock
 run as the invoking host user (`RUN_AS_HOST_USER`) so bind-mounted files (e.g.
 `node_modules`) aren't left owned by root on a rootful Docker daemon.
 
+`apex-app`/`apex-worker`/`apex-spec-doc-worker` also run with
+`--log-opt max-size=10m --log-opt max-file=3` (see ROADMAP.md Phase 12), so
+`docker logs`/`podman logs` output for each stays bounded instead of growing
+unbounded. This is independent of, and in addition to, the structured, rotated
+`logs/*.log` files each process also writes via [`app/lib/logger.js`](../app/lib/logger.js)
+(pino) — the Docker-level flags bound the container's own log driver storage; the
+`logs/` files are what survive container recreation and are directly `grep`-able from
+the host.
+
 ## 2. Ephemeral sandbox containers (per-session code execution)
 
 This is the more interesting half, built in Phase 7 of [ROADMAP.md](../ROADMAP.md).
