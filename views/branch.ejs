@@ -132,4 +132,12 @@
       <% } %>
     <% } %>
   </main>
+  <aside class="requirements-panel">
+    <h3>Requirements Log — CO <%= branch.co_number %></h3>
+    <% if (coSection) { %>
+      <pre class="document-body"><%= coSection %></pre>
+    <% } else { %>
+      <p class="placeholder">No requirements log entries for this CO yet.</p>
+    <% } %>
+  </aside>
 <%- include('partials/foot') %>

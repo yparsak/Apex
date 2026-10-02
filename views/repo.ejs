@@ -15,5 +15,66 @@
       </label>
       <button type="submit">Create branch from <%= repo.default_branch_name %></button>
     </form>
+
+    <h2>Branches</h2>
+    <nav class="tabs">
+      <a class="tab <%= tab === 'active' ? 'active' : '' %>" href="/repos/<%= repo.id %>?tab=active">Active (<%= branches.length %>)</a>
+      <a class="tab <%= tab === 'stale' ? 'active' : '' %>" href="/repos/<%= repo.id %>?tab=stale">Stale (<%= staleBranches.length %>)</a>
+    </nav>
+
+    <% if (tab === 'active') { %>
+      <% if (!branches.length) { %>
+        <p class="placeholder">No active branches yet.</p>
+      <% } else { %>
+        <table class="admin-table">
+          <thead><tr><th>Branch</th><th>CO</th><th>Created</th><th></th></tr></thead>
+          <tbody>
+            <% branches.forEach(function(b) { %>
+            <tr>
+              <td><%= b.branch_name %></td>
+              <td><%= b.co_number %></td>
+              <td><%= b.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+              <td class="row-form">
+                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/continue" class="inline-form">
+                  <button type="submit" class="link-button">Continue</button>
+                </form>
+                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/deactivate" class="inline-form">
+                  <button type="submit" class="link-button">Deactivate</button>
+                </form>
+                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
+                  <button type="submit" class="danger-button">Delete</button>
+                </form>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } %>
+    <% } else { %>
+      <% if (!staleBranches.length) { %>
+        <p class="placeholder">No stale branches.</p>
+      <% } else { %>
+        <table class="admin-table">
+          <thead><tr><th>Branch</th><th>CO</th><th>Deactivated</th><th></th></tr></thead>
+          <tbody>
+            <% staleBranches.forEach(function(b) { %>
+            <tr>
+              <td><%= b.branch_name %></td>
+              <td><%= b.co_number %></td>
+              <td><%= b.updated_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
+              <td class="row-form">
+                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/reactivate" class="inline-form">
+                  <button type="submit" class="link-button">Reactivate</button>
+                </form>
+                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
+                  <button type="submit" class="danger-button">Delete</button>
+                </form>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      <% } %>
+    <% } %>
   </main>
 <%- include('partials/foot') %>

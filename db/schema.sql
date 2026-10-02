@@ -83,13 +83,20 @@ CREATE TABLE IF NOT EXISTS branches (
   co_number VARCHAR(9) NOT NULL,
   increment INT UNSIGNED NOT NULL,
   branch_name VARCHAR(255) NOT NULL,
-  status ENUM('active', 'deleted') NOT NULL DEFAULT 'active',
+  status ENUM('active', 'stale', 'deleted') NOT NULL DEFAULT 'active',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_branches_repo_initials_co_increment (repo_id, initials, co_number, increment),
   CONSTRAINT fk_branches_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- schema.sql has no incremental migration files - branches already existed
+-- before Phase 13 added the 'stale' status, so the enum needs its own
+-- idempotent widening (MODIFY COLUMN re-stating the same definition is a
+-- no-op on a rerun, same spirit as the ADD COLUMN IF NOT EXISTS pattern used
+-- elsewhere in this file for additive changes).
+ALTER TABLE branches MODIFY COLUMN status ENUM('active', 'stale', 'deleted') NOT NULL DEFAULT 'active';
 
 -- ---------------------------------------------------------------------------
 -- Phase 5 / Phase 7 / Phase 8: sessions, requirements, pipeline execution

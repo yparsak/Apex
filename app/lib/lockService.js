@@ -104,4 +104,28 @@ async function forceReleaseLock(lockId) {
   return lock;
 }
 
-module.exports = { acquireLock, releaseLock, listActiveLocks, listContentionEvents, forceReleaseLock };
+// isLockedForBranch(...) - Phase 13's deactivate/delete guard: true only if
+// the session currently holding this (repo, CO) pipeline lock belongs to
+// this exact branch, not just any branch sharing the same co_number (a
+// user's first branch on any CO is always its own increment, independent of
+// other users - see branchService.js's getNextIncrement). Checking by
+// co_number alone would over-block a different user's unrelated branch on
+// the same CO.
+async function isLockedForBranch(repoId, coNumber, branchId) {
+  const [[row]] = await db.query(
+    `SELECT pl.id FROM pipeline_locks pl
+     JOIN sessions s ON s.id = pl.session_id
+     WHERE pl.repo_id = ? AND pl.co_number = ? AND s.branch_id = ?`,
+    [repoId, coNumber, branchId]
+  );
+  return !!row;
+}
+
+module.exports = {
+  acquireLock,
+  releaseLock,
+  listActiveLocks,
+  listContentionEvents,
+  forceReleaseLock,
+  isLockedForBranch,
+};

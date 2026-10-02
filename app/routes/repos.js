@@ -9,6 +9,7 @@ const clarificationService = require('../lib/clarificationService');
 const auditLog = require('../lib/auditLog');
 const pipelineRunner = require('../lib/pipeline/pipelineRunner');
 const pipelineStepper = require('../lib/pipelineStepper');
+const documentsService = require('../lib/documents/documentsService');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -53,15 +54,38 @@ async function loadBranchSession(req, res, access) {
 }
 
 async function renderRepoPage(req, res, access, error) {
-  const branches = await branchService.listActiveBranches(access.repo, access.org);
+  const tab = req.query.tab === 'stale' ? 'stale' : 'active';
+  const [branches, staleBranches] = await Promise.all([
+    branchService.listActiveBranches(access.repo, access.org),
+    branchService.listStaleBranches(access.repo.id),
+  ]);
   res.render('repo', {
     user: req.session.user,
     repo: access.repo,
     org: access.org,
     repoGroup: access.repoGroup,
     branches,
+    staleBranches,
+    tab,
     error,
   });
+}
+
+// Loads a branch by id (scoped to this repo) for the repo-page management
+// actions below (deactivate/reactivate/delete) - unlike loadBranchSession,
+// these aren't tied to the requesting user's own session, since any user
+// with repo access can manage the branch list (same access level createBranch
+// already requires).
+async function loadBranch(req, res, access) {
+  const [[branch]] = await db.query('SELECT * FROM branches WHERE id = ? AND repo_id = ?', [
+    req.params.branchId,
+    access.repo.id,
+  ]);
+  if (!branch) {
+    res.status(404).send('Branch not found.');
+    return null;
+  }
+  return branch;
 }
 
 router.get('/:repoId', async (req, res) => {
@@ -133,6 +157,64 @@ router.post('/:repoId/branches/:branchId/continue', async (req, res) => {
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
 
+// Phase 13 branch-management actions (repo page, Active/Stale table).
+// Deactivate/delete are blocked while this exact branch's own session holds
+// the pipeline lock, so a branch can't be pulled out from under an in-flight
+// pipeline run - see lockService.isLockedForBranch.
+router.post('/:repoId/branches/:branchId/deactivate', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const branch = await loadBranch(req, res, access);
+  if (!branch) return;
+
+  if (await lockService.isLockedForBranch(access.repo.id, branch.co_number, branch.id)) {
+    return renderRepoPage(req, res, access, 'This branch has a pipeline run in progress; wait for it to finish before deactivating.');
+  }
+
+  const ok = await branchService.deactivateBranch(branch.id);
+  if (ok) {
+    await auditLog.logAction({ userId: req.session.user.id, action: 'branch_deactivated', detail: branch.branch_name });
+  }
+  res.redirect(`/repos/${access.repo.id}?tab=active`);
+});
+
+router.post('/:repoId/branches/:branchId/reactivate', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const branch = await loadBranch(req, res, access);
+  if (!branch) return;
+
+  const result = await branchService.reactivateBranch(branch, access.repo, access.org);
+  if (result.reactivated) {
+    await auditLog.logAction({ userId: req.session.user.id, action: 'branch_reactivated', detail: branch.branch_name });
+    return res.redirect(`/repos/${access.repo.id}?tab=active`);
+  }
+  if (result.deletedInstead) {
+    return renderRepoPage(
+      req,
+      res,
+      access,
+      `"${branch.branch_name}" no longer exists on GitHub and was marked deleted instead of reactivated.`
+    );
+  }
+  res.redirect(`/repos/${access.repo.id}?tab=stale`);
+});
+
+router.post('/:repoId/branches/:branchId/delete', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const branch = await loadBranch(req, res, access);
+  if (!branch) return;
+
+  if (await lockService.isLockedForBranch(access.repo.id, branch.co_number, branch.id)) {
+    return renderRepoPage(req, res, access, 'This branch has a pipeline run in progress; wait for it to finish before deleting.');
+  }
+
+  await branchService.deleteBranch(branch.id);
+  await auditLog.logAction({ userId: req.session.user.id, action: 'branch_deleted', detail: branch.branch_name });
+  res.redirect(`/repos/${access.repo.id}?tab=${branch.status === 'stale' ? 'stale' : 'active'}`);
+});
+
 async function renderBranchPage(req, res, access, branch, session, error) {
   const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
     access.repo.id,
@@ -140,11 +222,12 @@ async function renderBranchPage(req, res, access, branch, session, error) {
   ]);
   const lockHeld = !!lock && lock.session_id === session.id;
 
-  const [branches, conversation, [requirements], [[latestRun]]] = await Promise.all([
+  const [branches, conversation, [requirements], [[latestRun]], coSection] = await Promise.all([
     branchService.listActiveBranches(access.repo, access.org),
     clarificationService.getConversation(session.id),
     db.query('SELECT * FROM session_requirements WHERE session_id = ? ORDER BY id ASC', [session.id]),
     db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [session.id]),
+    documentsService.getCoSection(access.repo.id, branch.co_number),
   ]);
 
   const pendingRequirement = requirements.find((r) => r.confirm_status === 'pending_confirm') || null;
@@ -198,6 +281,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     eligibleForResume,
     topStepper,
     subStepper,
+    coSection,
     error,
   });
 }

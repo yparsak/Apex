@@ -23,6 +23,14 @@ async function getNextIncrement(initials, coNumber) {
   return row.maxIncrement + 1;
 }
 
+// markDeleted(...) - the single place status='deleted' is ever written (see
+// ROADMAP.md Phase 13), so the automatic GitHub-gone detection below and the
+// user-initiated delete action (app/routes/repos.js) converge on the exact
+// same outcome regardless of which path triggered it.
+async function markDeleted(branchId) {
+  await db.query("UPDATE branches SET status = 'deleted' WHERE id = ?", [branchId]);
+}
+
 // Re-checks each "active" branch against GitHub (on-demand staleness check,
 // same bounded-window tradeoff as notes.md accepted risk #5) and flips
 // anything actually gone on GitHub to status='deleted', excluding it from the
@@ -44,12 +52,67 @@ async function listActiveBranches(repo, org) {
       ghBranch = undefined;
     }
     if (ghBranch === null) {
-      await db.query("UPDATE branches SET status = 'deleted' WHERE id = ?", [branch.id]);
+      await markDeleted(branch.id);
       continue;
     }
     active.push(branch);
   }
   return active;
+}
+
+// listStaleBranches(...) - Phase 13's Stale tab on the repo page. Unlike
+// listActiveBranches, this never re-checks GitHub - a stale branch isn't
+// offered for continued work, so there's nothing time-sensitive to verify
+// until the user actually clicks Reactivate (see reactivateBranch below).
+async function listStaleBranches(repoId) {
+  const [rows] = await db.query(
+    "SELECT * FROM branches WHERE repo_id = ? AND status = 'stale' ORDER BY updated_at DESC",
+    [repoId]
+  );
+  return rows;
+}
+
+// deactivateBranch(...) - Phase 13's user-initiated Active -> Stale move.
+// Scoped to status='active' in the WHERE clause so a concurrent delete (or
+// an already-stale branch) makes this a no-op rather than resurrecting it.
+async function deactivateBranch(branchId) {
+  const [result] = await db.query("UPDATE branches SET status = 'stale' WHERE id = ? AND status = 'active'", [
+    branchId,
+  ]);
+  return result.affectedRows > 0;
+}
+
+// reactivateBranch(...) - Phase 13's user-initiated Stale -> Active move.
+// Re-checks GitHub existence first, same on-demand check as
+// listActiveBranches: a confirmed 404 marks the branch deleted instead of
+// reactivating it, so Active never shows an entry that's actually gone. An
+// ambiguous/failed lookup is treated as "unknown" and reactivated anyway -
+// same "only act on a confirmed 404" rule - the next repo-page load re-runs
+// listActiveBranches' own check and will catch it then if it really is gone.
+async function reactivateBranch(branch, repo, org) {
+  let ghBranch;
+  try {
+    ghBranch = await githubApi.getBranch(org.name, repo.name, branch.branch_name);
+  } catch (err) {
+    ghBranch = undefined;
+  }
+  if (ghBranch === null) {
+    await markDeleted(branch.id);
+    return { reactivated: false, deletedInstead: true };
+  }
+
+  const [result] = await db.query("UPDATE branches SET status = 'active' WHERE id = ? AND status = 'stale'", [
+    branch.id,
+  ]);
+  return { reactivated: result.affectedRows > 0, deletedInstead: false };
+}
+
+// deleteBranch(...) - Phase 13's user-initiated soft delete, from either the
+// Active or Stale tab. The row is never removed - see markDeleted - so
+// sessions/session_requirements/pipeline_runs/audit_log history tied to this
+// branch stays intact; it's just unreachable from the UI going forward.
+async function deleteBranch(branchId) {
+  await markDeleted(branchId);
 }
 
 async function createBranch({ repo, org, coNumber, user }) {
@@ -107,4 +170,12 @@ async function createBranch({ repo, org, coNumber, user }) {
   }
 }
 
-module.exports = { isValidCoNumber, listActiveBranches, createBranch };
+module.exports = {
+  isValidCoNumber,
+  listActiveBranches,
+  listStaleBranches,
+  createBranch,
+  deactivateBranch,
+  reactivateBranch,
+  deleteBranch,
+};

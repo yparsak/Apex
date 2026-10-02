@@ -454,3 +454,20 @@ body {
 .step-pending {
   color: #9ca3af;
 }
+
+.requirements-panel {
+  width: 300px;
+  border-left: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 1.5rem 1rem;
+}
+
+.requirements-panel h3 {
+  margin-top: 0;
+  font-size: 0.95rem;
+}
+
+.requirements-panel .document-body {
+  max-width: none;
+  margin-bottom: 0;
+}

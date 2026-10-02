@@ -612,6 +612,62 @@ Open / undecided for this phase:
   pipeline lock) can be deactivated/deleted at all, or whether that's blocked until
   the session reaches a terminal state — not decided yet.
 
+**Implementation notes (decisions made while building this phase):**
+- **Non-terminal-session guard, resolved**: deactivate/delete are blocked while
+  `lockService.isLockedForBranch(repoId, coNumber, branchId)` returns true — a join from
+  `pipeline_locks` to `sessions` on `session_id`, filtered to `s.branch_id = ?`. Checking
+  by `co_number` alone would over-block: a user's first branch on any CO is always its
+  own increment independent of other users (Phase 4), so two different branches can
+  share a `co_number` and only one of them actually holds the lock. The guard applies to
+  both `/deactivate` and `/delete`; `/delete` keeps it even though a `stale` branch can
+  never actually be locked (deactivation itself is blocked while locked, and `/continue`
+  already requires `status='active'` to start a new session) — cheap extra safety against
+  a future edge case rather than a currently-reachable one.
+- **Reactivate GitHub-existence re-check, resolved**: `branchService.reactivateBranch`
+  re-runs the exact same `githubApi.getBranch` check `listActiveBranches` already does.
+  A confirmed 404 calls the same `markDeleted` a stale branch's Delete action would have
+  called, surfacing a message instead of silently reactivating a dead branch. An
+  ambiguous/failed lookup (no creds, transient error) is treated as "unknown" and
+  reactivated anyway — same "only act on a confirmed 404" rule as `listActiveBranches`,
+  which re-runs that same check on the very next repo-page load and will catch it then if
+  it's genuinely gone.
+- **`markDeleted(branchId)` unifies both delete paths**, per the roadmap's "converge on
+  the same outcome" language: `listActiveBranches`' automatic GitHub-gone detection and
+  the new user-initiated `/delete` route both call it, rather than each having its own
+  `UPDATE ... SET status = 'deleted'`.
+- **Branch-management actions aren't owner-restricted**: unlike `/retry`/`/resume`
+  (scoped to the session's own `(branch_id, user_id)`), `/deactivate`, `/reactivate`, and
+  `/delete` are available to any user with access to the repo group — the same access
+  level `createBranch` and `/continue` already require, consistent with branch creation
+  itself not being ownership-gated either.
+- **Audit logging uses `auditLog.logAction` (the plain `audit_log` table), not
+  `adminAudit.logAdminAction`**: these are user actions available to any repo-group
+  member, not gated by `is_admin`, so they follow the same non-admin pattern as
+  `session_approved`/`session_cleared` elsewhere in `app/routes/repos.js`. `session_id` is
+  passed as `null` since these actions are branch-level, not tied to one session.
+- **Active/Stale tabs are a `?tab=active|stale` query param** on `GET /repos/:repoId`
+  (defaulting to `active`), reusing the same pattern as the dashboard's `?group=`
+  selector (`views/dashboard.ejs`) rather than two separate routes — the two tables share
+  one `renderRepoPage` call and one error-message path.
+- **Right panel width settled at 300px** (`.requirements-panel` in
+  `public/css/style.css`), mirroring `.sidebar`'s fixed-width + border + background
+  convention on the opposite side of the flex `.layout` row. `.content` stays `flex: 1`
+  unchanged — it simply shrinks to fill what's left between the two fixed-width asides.
+- **Right panel reuses `documentsService`/`requirementsLogFormat.js` via a new
+  `getCoSection(repoId, coNumber)`**, a repo-scoped sibling to the existing
+  `searchByCoNumber` (which iterates every accessible repo plus a
+  `user_repo_group_permissions` join irrelevant here, since the branch route already has
+  `access.repo` from `repoAccess.js`). Rendered with the same `.document-body` class the
+  Documents page already uses, with `max-width`/`margin-bottom` overridden inside
+  `.requirements-panel` to fit the narrower fixed-width column instead of the Documents
+  page's 800px.
+- **Schema**: `branches.status` widened from `ENUM('active','deleted')` to
+  `ENUM('active','stale','deleted')` via `ALTER TABLE ... MODIFY COLUMN` (re-stating the
+  full definition), since this is the first phase needing to widen an existing enum
+  rather than just add a column — `MODIFY COLUMN` restating the same target definition is
+  itself idempotent on a rerun, keeping schema.sql's "no incremental migration files"
+  convention intact without needing a new mechanism.
+
 ## Phase 14 — Usage/cost reporting & model-provider circuit breaker
 
 Not in notes.md's original scope.

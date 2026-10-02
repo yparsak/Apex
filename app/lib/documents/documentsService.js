@@ -35,4 +35,21 @@ async function searchByCoNumber(coNumber, userId) {
   return results;
 }
 
-module.exports = { searchByCoNumber };
+// getCoSection(...) - Phase 13's branch-page right panel: same underlying
+// mechanism as searchByCoNumber above (one repo_documents row, split by
+// parseSections), scoped to a single already-known-accessible repo instead
+// of iterating every repo a user can access and re-joining
+// user_repo_group_permissions, since the caller already has access.repo from
+// repoAccess.js.
+async function getCoSection(repoId, coNumber) {
+  const [[doc]] = await db.query(
+    "SELECT content FROM repo_documents WHERE repo_id = ? AND doc_type = 'requirements_log' AND co_number = ''",
+    [repoId]
+  );
+  if (!doc) return null;
+
+  const section = parseSections(doc.content).find((s) => s.co === coNumber);
+  return section ? section.body.trim() : null;
+}
+
+module.exports = { searchByCoNumber, getCoSection };
