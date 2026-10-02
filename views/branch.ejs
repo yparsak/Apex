@@ -115,6 +115,7 @@
       <% } %>
 
       <% if (session.status === 'failed') { %>
+        <p class="error">This pipeline run failed<% if (latestRun && latestRun.stage) { %> at the <%= latestRun.stage %> step<% } %>. Resume/retry the same requirements below, or clear them and start over.</p>
         <div class="overlap-actions">
           <% if (eligibleForResume) { %>
             <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/resume" class="inline-form">
@@ -122,7 +123,10 @@
             </form>
           <% } %>
           <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/retry" class="inline-form">
-            <button type="submit" class="danger-button">Retry (full re-run)</button>
+            <button type="submit">Retry (full re-run)</button>
+          </form>
+          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/clear" class="inline-form">
+            <button type="submit" class="danger-button">Clear &amp; start new session</button>
           </form>
         </div>
       <% } %>

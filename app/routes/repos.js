@@ -322,6 +322,39 @@ router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
 });
 
+// Clear-after-failure: abandons a failed session rather than re-running it -
+// releases the pipeline lock it's still holding (lockService never releases
+// on failure) and starts a brand-new session with no carried-over
+// requirements, so the user can describe the work fresh instead of being
+// forced to retry the same requirements that led to the failure. The old
+// session's own status is left untouched (same precedent as Phase 11's admin
+// force-unlock) - it just stops being "the most recent session" once the new
+// one exists, so loadBranchSession/branch.ejs naturally move on from it.
+router.post('/:repoId/branches/:branchId/clear', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  if (session.status !== 'failed') {
+    return renderBranchPage(req, res, access, branch, session, 'This session is not in a failed state to clear.');
+  }
+
+  await lockService.releaseLock(access.repo.id, branch.co_number, session.id);
+  const newSession = await sessionService.createSession(branch.id, req.session.user.id);
+  await lockService.acquireLock(access.repo.id, branch.co_number, newSession.id, req.session.user.id);
+  await auditLog.logAction({
+    sessionId: session.id,
+    userId: req.session.user.id,
+    action: 'session_cleared',
+    detail: `started new session ${newSession.id}`,
+  });
+
+  res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+});
+
 // Resume-from-failed-step (see ROADMAP.md Phase 9): unlike /retry above, this
 // reuses the failed attempt's kept-alive container and whatever the last
 // successfully completed step produced - worker.js dispatches to
