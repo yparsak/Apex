@@ -187,7 +187,7 @@ async function run(sessionId) {
   try {
     ({ session, branch, repo, org, requirements } = await loadContext(sessionId));
     runId = await createRun(sessionId);
-    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number });
+    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId });
     await db.query("UPDATE sessions SET status = 'running', resume_requested = FALSE WHERE id = ?", [sessionId]);
   } catch (err) {
     // Couldn't even start bookkeeping for this session - still must move it
@@ -263,7 +263,7 @@ async function resume(sessionId) {
       sessionId,
     ]);
     failedRun = row;
-    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number });
+    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId: failedRun ? failedRun.id : undefined });
   } catch (err) {
     // Same failure mode as run()'s startup guard - a broken lookup here must
     // still move the session out of 'queued', or worker.js's poll loop would

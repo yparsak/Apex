@@ -260,7 +260,9 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   one-shot nightly invocation as of Phase 15, runs the same purge once per
   invocation instead. Independent of Docker's own `--log-opt max-size/max-file`
   container-log rotation. Pipeline log lines carry `sessionId`/`repoId`/`coNumber`/
-  `stage` so a session's full lifecycle is greppable by id.
+  `runId`/`stage` so a session's full lifecycle is greppable by id, and `runId`
+  (Phase 16) disambiguates which lines belong to which `pipeline_runs` attempt once a
+  session has retried more than once.
 - **Admin dashboards** (`/admin/alerts`, `/admin/locks`), backed by real queried
   endpoints under `/api/admin/*` using the same `requireAdmin` middleware as the rest
   of the admin surface — not write-only tables.

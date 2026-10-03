@@ -20,11 +20,20 @@ docker logs -f apex-app              # or apex-worker - apex-spec-doc-worker exi
 tail -f logs/worker.log              # survives container recreation, grep-able on the host
 ```
 
-Pipeline log lines are tagged with `sessionId`, `repoId`, `coNumber`, and `stage`, so
-you can follow one session's entire clone → codegen → build → test → push lifecycle:
+Pipeline log lines are tagged with `sessionId`, `repoId`, `coNumber`, `runId`, and
+`stage`, so you can follow one session's entire clone → codegen → build → test → push
+lifecycle:
 
 ```
 grep '"sessionId":42' logs/worker.log
+```
+
+If a session has retried more than once (see Phase 8/9), filter to one specific
+`pipeline_runs` attempt with `runId` instead, to avoid interleaving lines from an
+earlier failed attempt:
+
+```
+grep '"runId":17' logs/worker.log
 ```
 
 Rotated files are purged after `LOG_RETENTION_DAYS` (default 3); this is separate from

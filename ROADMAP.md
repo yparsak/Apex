@@ -848,10 +848,10 @@ hours** — not the 5-minute interval-loop default it ships with today.
   `apex-spec-doc-worker` as a persistent, interval-polling container now describes it
   as a one-shot nightly invocation instead.
 
-## Phase 16 — Logging & Observability: runId correlation (decision only, not yet implemented)
+## Phase 16 — Logging & Observability: runId correlation
 
 Resolves the open question from Phase 12: operational (structured app) logs and
-`pipeline_runs.build_log`/`test_log` will be linked by a **`runId` field**, rather than
+`pipeline_runs.build_log`/`test_log` are linked by a **`runId` field**, rather than
 staying entirely separate.
 
 - **Field name: `runId`**, not a generic `rowId`. This matches the domain vocabulary
@@ -869,19 +869,29 @@ staying entirely separate.
   timestamped by pino's own `time` field. `runId` closes the actual gap (which lines
   belong to which attempt); a redundant timestamp column wouldn't add anything on top
   of what both sides already carry.
-- **Where it lands (not yet implemented):** `pipelineRunner.js` binds `sessionId`/
-  `repoId`/`coNumber` onto a per-session child logger in both `run()` and `resume()`,
-  right after the attempt's `pipeline_runs.id` becomes known (`createRun`'s return
-  value, or the loaded failed run's `id` on resume). `runId` would join that same
-  binding — no schema change, since pino's child logger just merges an extra field
-  into the JSON output.
+- **Where it lands:** `pipelineRunner.js` binds `sessionId`/`repoId`/`coNumber` onto a
+  per-session child logger in both `run()` and `resume()`, right after the attempt's
+  `pipeline_runs.id` becomes known (`createRun`'s return value, or the loaded failed
+  run's `id` on resume). `runId` joins that same binding — no schema change, since
+  pino's child logger just merges an extra field into the JSON output.
 - **Trigger for building it:** next time debugging a session with 2+ `pipeline_runs`
   attempts actually requires disambiguating which structured log lines belong to which
   attempt's `build_log`/`test_log`, rather than inferring it from timestamps or
   stage-transition markers.
 
-Decision recorded here; `pipelineRunner.js` and `app/lib/logger.js` are unchanged —
-structured log lines still carry no `runId` field.
+**Implementation notes (decisions made while building this phase):**
+- **`run()`** passes `runId` into `logger.child(...)` immediately after `createRun(sessionId)`
+  resolves — the same point `runId` first becomes available, and already the earliest
+  point before any step-level logging (`setStage('cloning', ...)` etc.) happens.
+- **`resume()`** passes `runId: failedRun ? failedRun.id : undefined`. The child logger is
+  built right after the `SELECT ... ORDER BY id DESC LIMIT 1` lookup, which happens before
+  the `!failedRun` eligibility guard a few lines later — so the lookup returning no row at
+  all (which that guard treats as a bug-for-safety case, not a normal path; see Phase 9) is
+  handled by simply omitting `runId` from that one log line rather than throwing out of the
+  startup try/catch, which would mis-route a benign "nothing to resume" case through the
+  same `catch` block as a real startup failure.
+- **No change to `app/lib/logger.js`** — `createLogger`/`cache` are untouched; this phase is
+  entirely a call-site change to what gets merged into an existing child logger.
 
 ## Phase 17 — SSO: provider selection & authorization model (decision only, not yet implemented)
 
