@@ -4,9 +4,13 @@
 // logger.js's pino-roll transport writes under logs/, by age.
 //
 // Decided (was open in ROADMAP.md): runs from a setInterval inside each of
-// the three long-running processes (app.js/worker.js/specDocWorker.js) rather
-// than a standalone script, since all three already run forever and a repeat
-// sweep from each one is harmless (deleting an already-gone file is a no-op).
+// app.js/worker.js, the two long-running processes, rather than a standalone
+// script, since both already run forever and a repeat sweep from each one is
+// harmless (deleting an already-gone file is a no-op). specDocWorker.js is a
+// one-shot script (see ROADMAP.md Phase 15), so it calls purgeOnce() directly
+// instead of schedulePurge() - a setInterval would just be dead weight on a
+// process that exits right after its single tick, and that tick is already
+// as often as the purge needs to run.
 const fs = require('fs');
 const path = require('path');
 

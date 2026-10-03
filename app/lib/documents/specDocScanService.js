@@ -1,7 +1,8 @@
 // Trunk-staleness scan for the Spec/Communication Protocol doc (see
 // ROADMAP.md Phase 8). Decoupled from worker.js's AI-pipeline poll loop -
-// driven by its own interval script (see specDocWorker.js) so a backlog of
-// queued AI sessions can't delay doc regeneration, or vice versa.
+// driven by a nightly, one-shot cron invocation (see specDocWorker.js,
+// ROADMAP.md Phase 15) so a backlog of queued AI sessions can't delay doc
+// regeneration, or vice versa.
 const db = require('../db');
 const githubApi = require('../github/githubApi');
 

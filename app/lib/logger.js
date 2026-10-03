@@ -1,8 +1,10 @@
 // Structured logging (see ROADMAP.md Phase 12), replacing the scattered
 // console.log/console.error calls app.js/worker.js/specDocWorker.js/
-// pipelineRunner.js used to make directly. One pino instance per long-running
-// process (app/worker/spec-doc-worker - "per-process log files", not one
-// combined stream), writing to two targets at once:
+// pipelineRunner.js used to make directly. One pino instance per process name
+// (app/worker/spec-doc-worker - "per-process log files", not one combined
+// stream; specDocWorker.js is a one-shot invocation as of Phase 15, not a
+// long-running process like the other two, but still gets its own named log
+// file the same way), writing to two targets at once:
 //   - stdout, unchanged, so `docker logs`/`podman logs` keep working.
 //   - a size-and-date-rolled file under logs/<name>.log via pino-roll.
 // logs/ sits at the repo root, which the app/worker containers already

@@ -14,7 +14,9 @@ For architecture background referenced below, see [SPEC.md](SPEC.md) and
 **Logs.** Each process writes structured logs two ways:
 
 ```
-docker logs -f apex-app              # or apex-worker / apex-spec-doc-worker
+docker logs -f apex-app              # or apex-worker - apex-spec-doc-worker exits
+                                      # right after each nightly run, so this only
+                                      # works while that one-shot invocation is live
 tail -f logs/worker.log              # survives container recreation, grep-able on the host
 ```
 
@@ -149,11 +151,14 @@ counts to log.
 
 ## Spec/Communication Protocol doc not updating
 
-This doc regenerates on `apex-spec-doc-worker`'s own interval
-(`SPEC_DOC_SCAN_INTERVAL_MS`, default 5 minutes), completely decoupled from
+This doc regenerates via `apex-spec-doc-worker`, a one-shot script run nightly by
+cron (`make spec-doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
 `apex-worker`'s AI-pipeline queue. If it looks stale:
 
-1. Confirm `apex-spec-doc-worker` is actually running (`docker ps`).
+1. Confirm the nightly cron invocation of `make spec-doc-worker` is actually
+   configured and ran (check the host crontab/systemd timer/CronJob, whichever
+   the deployment target uses) — there's no persistent container to check with
+   `docker ps` anymore.
 2. Check `repos.spec_doc_synced_commit_sha` against the repo's actual default-branch
    HEAD on GitHub — the scan only enqueues a job when these differ.
 3. Check `spec_doc_jobs` for a `failed` row for that repo, and
@@ -177,7 +182,6 @@ Full variable list and what each controls: see
 |---|---|
 | `PIPELINE_POLL_INTERVAL_MS` | How often `apex-worker` checks for a new `queued` session. |
 | `PIPELINE_STEP_TIMEOUT_MS` | Per-step (build/test) timeout inside the sandbox. |
-| `SPEC_DOC_SCAN_INTERVAL_MS` | How often `apex-spec-doc-worker` checks for trunk movement. |
 | `LOG_RETENTION_DAYS` | How long rotated `logs/*.log` files are kept. |
 | `MODEL_MAX_TOKENS` | `max_tokens` sent on every NIM request. |
 

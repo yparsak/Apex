@@ -31,7 +31,7 @@ Apex is three independent Node.js processes plus a database, each its own contai
 |---|---|---|
 | `apex-app` | [app.js](app.js) | Express + EJS web app. Auth, repo/branch browsing, the clarification UI, admin screens, document views. |
 | `apex-worker` | [worker.js](worker.js) | Polls `sessions` for `queued` rows, one at a time, and drives each one's full sandboxed pipeline (clone → codegen → build → test → push) via [pipelineRunner.js](app/lib/pipeline/pipelineRunner.js). |
-| `apex-spec-doc-worker` | [specDocWorker.js](specDocWorker.js) | On its own interval (`SPEC_DOC_SCAN_INTERVAL_MS`), scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
+| `apex-spec-doc-worker` | [specDocWorker.js](specDocWorker.js) | One-shot script, invoked nightly by cron (`make spec-doc-worker`): scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
 | `apex-mariadb` | — | MariaDB 11. The only shared state between the three processes above — there's no Redis, no message queue. Locks, job queues, and session state all live in ordinary tables (see [db/schema.sql](db/schema.sql)). |
 
 `apex-app` never touches Docker. Only `apex-worker` creates sandbox containers, and it
@@ -256,7 +256,9 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   `spec-doc-worker`), each writing to stdout (so `docker logs`/`podman logs` keep
   working) *and* a rotated file under `logs/<name>.log` (`pino-roll`, size + daily
   rotation), purged past `LOG_RETENTION_DAYS` (default 3) by an hourly sweep running
-  inside each process. Independent of Docker's own `--log-opt max-size/max-file`
+  inside `app`/`worker` (the two long-running processes); `spec-doc-worker`, a
+  one-shot nightly invocation as of Phase 15, runs the same purge once per
+  invocation instead. Independent of Docker's own `--log-opt max-size/max-file`
   container-log rotation. Pipeline log lines carry `sessionId`/`repoId`/`coNumber`/
   `stage` so a session's full lifecycle is greppable by id.
 - **Admin dashboards** (`/admin/alerts`, `/admin/locks`), backed by real queried

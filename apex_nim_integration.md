@@ -167,7 +167,8 @@ again.
 
 ### 4. Spec/Communication Protocol doc — [specDocService.js](app/lib/documents/specDocService.js)
 
-Runs on `specDocWorker.js`'s own schedule, once per repo whose trunk has moved. **The
+Runs during `specDocWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
+Phase 15), once per repo whose trunk has moved. **The
 one call site where file selection is not model-driven**: there's no `FETCH_FILE` loop
 here at all. Instead, Apex pre-selects a small fixed allowlist —
 

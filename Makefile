@@ -20,7 +20,6 @@ DB_ROOT_PASSWORD ?= apex_dev_root_password
 
 APP_CONTAINER := apex-app
 WORKER_CONTAINER := apex-worker
-SPEC_DOC_WORKER_CONTAINER := apex-spec-doc-worker
 PORT ?= 3000
 NODE_IMAGE := docker.io/library/node:22-slim
 
@@ -99,17 +98,18 @@ worker: db-up
 	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git ca-certificates >/dev/null && npx nodemon worker.js"
 	@echo "Apex pipeline worker started (container: $(WORKER_CONTAINER))"
 
-# Phase 8: runs specDocWorker.js on its own interval loop, decoupled from
-# worker.js's AI-pipeline poll loop (see ROADMAP.md Phase 8) - just GitHub +
-# NIM network access needed, no Docker socket, so this uses the plain Node
-# image the same way `dev` does.
+# Phase 15: one-shot invocation of specDocWorker.js, decoupled from worker.js's
+# AI-pipeline poll loop - just GitHub + NIM network access needed, no Docker
+# socket, so this uses the plain Node image the same way `dev` does. Runs to
+# completion and exits (`--rm`, no `-d`/nodemon) rather than staying up as a
+# persistent container - meant to be invoked on a nightly cadence by whatever
+# cron-like facility the deployment target provides (host crontab, systemd
+# timer, container-native CronJob, etc.), e.g. a host crontab entry running
+# `make spec-doc-worker` once every 24 hours.
 spec-doc-worker: db-up
-	@$(RUNTIME) rm -f $(SPEC_DOC_WORKER_CONTAINER) 2>/dev/null || true
-	$(RUNTIME) run -d --name $(SPEC_DOC_WORKER_CONTAINER) --network $(NETWORK) \
-	  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+	$(RUNTIME) run --rm --network $(NETWORK) \
 	  -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) --env-file .env \
-	  $(NODE_IMAGE) npx nodemon specDocWorker.js
-	@echo "Apex spec-doc worker started (container: $(SPEC_DOC_WORKER_CONTAINER))"
+	  $(NODE_IMAGE) node specDocWorker.js
 
 logs:
 	$(RUNTIME) logs -f $(APP_CONTAINER)
@@ -117,7 +117,6 @@ logs:
 stop:
 	$(RUNTIME) rm -f $(APP_CONTAINER) 2>/dev/null || true
 	$(RUNTIME) rm -f $(WORKER_CONTAINER) 2>/dev/null || true
-	$(RUNTIME) rm -f $(SPEC_DOC_WORKER_CONTAINER) 2>/dev/null || true
 
 db-down:
 	$(RUNTIME) rm -f $(DB_CONTAINER) 2>/dev/null || true

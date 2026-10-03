@@ -13,17 +13,20 @@ long-lived containers on a shared `apex-net` network:
 - `apex-app` — the Express app itself, running `nodemon app.js` (`make dev`).
 - `apex-worker` — `worker.js`, the AI-pipeline poller (`make worker`).
 - `apex-spec-doc-worker` — `specDocWorker.js`, the Spec/Communication Protocol doc
-  regeneration loop (`make spec-doc-worker`).
+  regeneration script (`make spec-doc-worker`), run once nightly by cron rather than
+  staying up as a persistent container (see ROADMAP.md Phase 15).
 
 All of these bind-mount the repo into the container and run off the stock
 `node:22-slim` image — there's no custom Dockerfile for the app itself. Most targets
 run as the invoking host user (`RUN_AS_HOST_USER`) so bind-mounted files (e.g.
 `node_modules`) aren't left owned by root on a rootful Docker daemon.
 
-`apex-app`/`apex-worker`/`apex-spec-doc-worker` also run with
-`--log-opt max-size=10m --log-opt max-file=3` (see ROADMAP.md Phase 12), so
-`docker logs`/`podman logs` output for each stays bounded instead of growing
-unbounded. This is independent of, and in addition to, the structured, rotated
+`apex-app`/`apex-worker` also run with `--log-opt max-size=10m --log-opt max-file=3`
+(see ROADMAP.md Phase 12), so `docker logs`/`podman logs` output for each stays
+bounded instead of growing unbounded. `apex-spec-doc-worker` doesn't need this - as a
+one-shot `--rm` container (Phase 15) it never accumulates enough log output to
+matter, and is gone by the time a count-based rotation would do anything. This is
+independent of, and in addition to, the structured, rotated
 `logs/*.log` files each process also writes via [`app/lib/logger.js`](../app/lib/logger.js)
 (pino) — the Docker-level flags bound the container's own log driver storage; the
 `logs/` files are what survive container recreation and are directly `grep`-able from
@@ -92,3 +95,6 @@ sibling sandbox container.
   Docker-outside-of-Docker setup above.
 - `specDocWorker.js` doesn't use Docker/sandboxing at all — it only needs GitHub and
   NIM network access, so it runs on the plain Node image the same way `make dev` does.
+  It's also the one container here that isn't long-running: `make spec-doc-worker`
+  runs it to completion and removes it (`--rm`), meant to be invoked nightly by cron
+  rather than kept alive (see ROADMAP.md Phase 15).

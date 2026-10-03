@@ -786,7 +786,7 @@ Open / undecided for this phase:
   time" is a plain table of day → requests/tokens/cost, consistent with every other
   admin screen here being server-rendered tables.
 
-## Phase 15 — Spec/Communication Protocol doc regen: cron cadence (decision only, not yet implemented)
+## Phase 15 — Spec/Communication Protocol doc regen: cron cadence
 
 Resolves the open question from Phase 8 / Open-future: the Spec/Communication Protocol
 doc regen job (`specDocWorker.js`) will run on a **nightly cron job, once every 24
@@ -810,8 +810,43 @@ hours** — not the 5-minute interval-loop default it ships with today.
   single tick — harmless, since the immediate `purgeOnce` call it also makes still runs
   once per nightly invocation, which is as often as the purge needs to run anyway.
 
-Decision recorded here; the code (`specDocWorker.js`, `Makefile`, `.env.example`, and
-related docs) still reflects the Phase 8 interval-loop and hasn't been refactored yet.
+**Implementation notes (decisions made while building this phase):**
+- **`specDocWorker.js` is now a one-shot script**: `main()` runs
+  `scanForStaleRepos()` + `drainQueuedJobs()` once, calls `logRetention.purgeOnce()`
+  directly (not `schedulePurge()` — see below), then exits — `process.exit(0)` on
+  success, `process.exit(1)` on an uncaught error from either step, so the invoking
+  cron-like facility gets a real exit code to alert on instead of a silently-stuck
+  process. The old `for (;;) { tick(); sleep(INTERVAL_MS); }` loop, `sleep()` helper,
+  and `INTERVAL_MS` are gone entirely, not just unused.
+- **`SPEC_DOC_SCAN_INTERVAL_MS` removed from `.env.example`**, per the "known side
+  effect" flagged when this phase was decided — nothing reads it anymore.
+- **`logRetention.js`'s `schedulePurge()` is no longer called from
+  `specDocWorker.js`** — it calls `purgeOnce()` directly instead. `schedulePurge()`
+  (immediate `purgeOnce` + hourly `setInterval`) still exists and is still used by
+  `app.js`/`worker.js`, the two long-running processes where a repeat hourly sweep
+  makes sense; a `setInterval` in a process that exits right after its single tick
+  would just hold the event loop open for no reason. The immediate `purgeOnce` call
+  `main()` makes is still exactly one purge per nightly invocation — as often as the
+  purge needs to run, per the original decision.
+- **Makefile's `spec-doc-worker` target** dropped `-d`/`--name`/`npx nodemon` in favor
+  of a plain `docker run --rm ... node specDocWorker.js` — runs to completion and
+  removes itself, rather than staying up as a persistent container for nodemon to
+  restart. `SPEC_DOC_WORKER_CONTAINER` and its `stop` target line were removed since
+  there's no longer a persistent named container to `rm -f`. The `--log-opt
+  max-size/max-file` flags (Phase 12) were also dropped from this target —
+  irrelevant to a container that's gone within seconds of starting.
+  **Mechanism still deliberately not wired up**: nothing in this repo actually
+  invokes `make spec-doc-worker` on a nightly cadence yet (no crontab entry,
+  systemd timer, or CronJob manifest is checked in) — the deployment target that
+  would host one of those is still undecided (see Stack decisions), and per this
+  phase's original mechanism/deployment-target decoupling, that's fine: whoever
+  sets up the eventual deployment target just needs to point its cron-equivalent at
+  `make spec-doc-worker` (or the equivalent `docker run` directly), nightly.
+- **Docs updated to match** (`README.md`, `SPEC.md`, `apex_troubleshooting.md`,
+  `apex_nim_integration.md`, `docs/docker-usage.md`, plus comments in
+  `specDocScanService.js`/`logger.js`/`logRetention.js`) — anywhere that described
+  `apex-spec-doc-worker` as a persistent, interval-polling container now describes it
+  as a one-shot nightly invocation instead.
 
 ## Phase 16 — Logging & Observability: runId correlation (decision only, not yet implemented)
 

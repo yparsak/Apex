@@ -57,7 +57,7 @@ Then, in separate terminals:
 ```
 make dev              # web app -> http://localhost:3000/login
 make worker           # AI pipeline worker - required for sessions to actually run
-make spec-doc-worker  # optional, only needed to exercise doc regeneration
+make spec-doc-worker  # optional, one-shot doc-regen run - meant to be cron-scheduled nightly
 ```
 
 See [docs/Phase1_setup.md](docs/Phase1_setup.md) for what each step does and
@@ -67,7 +67,7 @@ for issues after setup succeeds.
 ### Stopping everything
 
 ```
-make stop       # removes apex-app, apex-worker, apex-spec-doc-worker
+make stop       # removes apex-app, apex-worker
 make db-down    # also stops apex-mariadb (keeps the data volume)
 make clean      # full reset - also removes the data volume and network
 ```
@@ -78,6 +78,6 @@ make clean      # full reset - also removes the data volume and network
 
 - `app/` — Express routes, views (EJS), and `lib/` service modules.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
-- `specDocWorker.js` — Spec/Communication Protocol doc regeneration loop.
+- `specDocWorker.js` — Spec/Communication Protocol doc regeneration, run nightly via cron.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.
