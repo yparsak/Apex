@@ -10,15 +10,6 @@ all three Phase 13 opens). Those are resolved and excluded here. ROADMAP.md's "A
 risks" section is also excluded by design — it's explicitly called out as settled trade-offs,
 not open questions.
 
-## Deployment & Infrastructure
-
-- **Deployment target** — explicitly "not decided — out of scope for this roadmap" (Stack
-  decisions section).
-- **Spec/Communication Protocol cron interval & mechanism** — decoupled from `worker.js`
-  into a separate scheduled script (Phase 8), but the actual interval and whether it's host
-  cron/systemd vs. something container-native is unresolved, pending the deployment-target
-  decision above.
-
 ## Container/Pipeline Lifecycle
 
 - **Idle/abandoned kept-alive containers** — a failed session's container is kept alive for
@@ -29,13 +20,6 @@ not open questions.
   before trusting cached state; current behavior skips this check by default (Phase 9 /
   Open-future).
 
-## Logging & Observability
-
-- **Operational logs vs. pipeline-run logs cross-referencing** (Phase 12) — whether to add a
-  `runId` field linking structured app logs to `pipeline_runs.build_log`/`test_log`.
-  Currently kept separate "unless that proves awkward in practice" — a provisional, not
-  final, decision.
-
 ## Usage/Cost Reporting & Model Provider (Phase 14)
 
 Phase 14 is built — reporting dashboard at `/admin/usage`, `usage_events` logging, and a
@@ -43,8 +27,6 @@ DB-backed circuit breaker in `modelAdapter.js`. Recovery semantics were resolved
 manual-only (admin "clear lock" action, no auto-expiry — see ROADMAP.md Phase 14
 implementation notes). Still open:
 
-- Whether the circuit breaker should also lock at **pipeline entry** (before `worker.js`
-  starts a run), in addition to the per-call-site check already in `modelAdapter.js`.
 - Whether **"credits"** stays a pure reporting label or becomes an actual allocated budget
   per org/repo-group later.
 - The exact **warning threshold** (e.g., 80% of quota) before flipping provider health to
@@ -53,7 +35,10 @@ implementation notes). Still open:
 
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 
-- **SSO** — `authProvider` interface supports it, but no second provider is implemented.
+- **SSO** — `authProvider` interface supports it, and Phase 17 decided provider
+  selection (`AUTH_PROVIDER` env var) and the authorization model (local `users` row by
+  id match, no group-claim gating) ahead of time, but no second provider is implemented
+  yet.
 - **Non-NIM model provider** — adapter interface isolates this, but a differing
   request/response shape is unexercised.
 - **Branch-deletion staleness window** — on-demand GitHub-existence checks are accepted for

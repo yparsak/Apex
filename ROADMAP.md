@@ -521,11 +521,13 @@ Open / undecided for this phase:
   than one process is harmless (deleting an already-purged file is a no-op). Reads
   `LOG_RETENTION_DAYS` (default **3**) and deletes any file under `logs/` whose mtime
   is older than that many days.
-- **Operational logs vs. `pipeline_runs.build_log`/`test_log` stay separate**, per
-  the default this phase already called out — no `runId` field was added; structured
-  pipeline log lines carry `sessionId`/`repoId`/`coNumber`/`stage` instead (see below),
-  which was enough to make a session's lifecycle greppable without joining back to a
-  specific `pipeline_runs` row.
+- **Operational logs vs. `pipeline_runs.build_log`/`test_log` stay separate for now**,
+  per the default this phase already called out — no `runId` field was added yet;
+  structured pipeline log lines carry `sessionId`/`repoId`/`coNumber`/`stage` instead
+  (see below), which is enough to make a session's lifecycle greppable without joining
+  back to a specific `pipeline_runs` row when there's only one attempt. See Phase 16
+  for the decision to close this gap with a `runId` field once a multi-attempt session
+  actually needs it.
 - **`createLogger(name)` caches one pino instance per name**, not a fresh one per
   call: `specDocService.js`'s one remaining stray `console.error` (a job-failure log
   inside `drainQueuedJobs`) also moved to the structured logger, under the same
@@ -711,9 +713,6 @@ Not in notes.md's original scope.
   - Surfaced on the same Usage admin page as a status indicator, not a separate screen.
 
 Open / undecided for this phase:
-- Whether locking should happen at pipeline *entry* (before `worker.js` starts a run) in
-  addition to the call-site check inside `modelAdapter.js`, to avoid leaving partial
-  pipeline state behind on an already-known-bad provider.
 - Whether "credits" stays purely a reporting label for cost/tokens, or becomes an actual
   allocated budget per org/repo-group later — this phase assumes reporting only.
 - Exact warning threshold (e.g. 80% of a known quota) before flipping to `warning`
@@ -750,11 +749,19 @@ Open / undecided for this phase:
   `/quota|billing|credit|insufficient/i` in the message) actually locks it — a transient
   network error is a no-op, since `nvidiaNimAdapter.js` already retries those
   internally and they say nothing about remaining quota.
-- **Resolved: lock point is call-site only**, not pipeline entry. Keeping it inside
-  `modelAdapter.js` means every one of the four call sites gets the fail-fast check for
-  free with no per-call-site wiring; adding a second check at pipeline entry would only
-  save a clone/build/test cycle's wall-clock on an already-known-bad provider, which this
-  phase doesn't resolve — left open above.
+- **Resolved: lock point is call-site only, deliberately not also at pipeline entry.**
+  `pipelineRunner.js`'s step order is clone → codegen → build → test → push, and
+  `codegenService.js` (the pipeline's own first model call) is reached immediately after
+  clone — so an entry-point check in `run()`/`resume()` would only save one clone step's
+  wall-clock on an already-known-locked provider, not a build/test cycle; build/test never
+  run anyway, since `codegenService`'s own call-site check already fails the run before
+  either starts. Weighed against that modest saving: nothing is currently broken (every
+  run already fails cleanly, just one clone-step later than strictly necessary), and
+  keeping the check in one place (`modelAdapter.js`) means all four call sites get it for
+  free with no per-call-site wiring — a second check at pipeline entry would be a second
+  place that has to track provider-health semantics. Revisit only if clone cost in
+  practice (large repos, slow network) makes paying it on a known-dead provider a real
+  nuisance, not just a theoretical one.
 - **Resolved: recovery is manual-only**, via a "Clear lock" button on `/admin/usage`
   (`POST /admin/usage/providers/:provider/clear-lock`, logged to `admin_audit_log` same
   as `/admin/locks`' force-unlock). No auto-expiry — this project has no reliable signal
@@ -779,11 +786,123 @@ Open / undecided for this phase:
   time" is a plain table of day → requests/tokens/cost, consistent with every other
   admin screen here being server-rendered tables.
 
+## Phase 15 — Spec/Communication Protocol doc regen: cron cadence (decision only, not yet implemented)
+
+Resolves the open question from Phase 8 / Open-future: the Spec/Communication Protocol
+doc regen job (`specDocWorker.js`) will run on a **nightly cron job, once every 24
+hours** — not the 5-minute interval-loop default it ships with today.
+
+- **Interval:** nightly. Doc freshness bounded to once a day is acceptable — these are
+  low-urgency Documents-page artifacts, not anything the AI pipeline depends on.
+- **Mechanism:** a nightly cadence changes the shape of `specDocWorker.js` itself, not
+  just its config. The current `for (;;) { tick(); sleep(INTERVAL_MS); }` loop (see
+  Phase 8) should become a one-shot script — run `scanForStaleRepos()` +
+  `drainQueuedJobs()` once, then exit — invoked by whatever cron-like facility the
+  eventual deployment target provides (host crontab, systemd timer, container-native
+  CronJob, etc.). This decouples the mechanism choice from the deployment-target
+  decision (still open, see Stack decisions): a one-shot script works identically under
+  any of them, so deployment target no longer needs to be decided first to close this
+  out.
+- **Known side effects, not yet resolved:** `SPEC_DOC_SCAN_INTERVAL_MS` becomes
+  obsolete; the Makefile's `nodemon`-based persistent run target (see Phase 8) needs
+  rework for a one-shot invocation; `logRetention.js`'s `schedulePurge` hourly
+  `setInterval` (Phase 12) becomes moot once `specDocWorker.js` exits right after its
+  single tick — harmless, since the immediate `purgeOnce` call it also makes still runs
+  once per nightly invocation, which is as often as the purge needs to run anyway.
+
+Decision recorded here; the code (`specDocWorker.js`, `Makefile`, `.env.example`, and
+related docs) still reflects the Phase 8 interval-loop and hasn't been refactored yet.
+
+## Phase 16 — Logging & Observability: runId correlation (decision only, not yet implemented)
+
+Resolves the open question from Phase 12: operational (structured app) logs and
+`pipeline_runs.build_log`/`test_log` will be linked by a **`runId` field**, rather than
+staying entirely separate.
+
+- **Field name: `runId`**, not a generic `rowId`. This matches the domain vocabulary
+  this codebase already uses — `pipeline_runs`, `attempt_number`, Phase 8's
+  "from-scratch retry" and Phase 9's "resume-from-step retry" all talk about a "run"/
+  "attempt." A generic `rowId` would also be ambiguous once attached: `sessionId` and
+  `repoId` are already bound to every structured log line and are *themselves* primary
+  keys of other tables, so naming only the new field after the fact that it's a row id
+  (rather than what it identifies) would make it look like a different kind of thing
+  than it is.
+- **No additional timestamp column needed.** `pipeline_runs` already has `created_at`
+  (set on insert, i.e. attempt start) and `updated_at` (bumped on every subsequent
+  `UPDATE` — `setStage`/`setContainerId`/`completeRun`/`failRun` all touch it), giving
+  each attempt a usable time window already. Structured log lines are already
+  timestamped by pino's own `time` field. `runId` closes the actual gap (which lines
+  belong to which attempt); a redundant timestamp column wouldn't add anything on top
+  of what both sides already carry.
+- **Where it lands (not yet implemented):** `pipelineRunner.js` binds `sessionId`/
+  `repoId`/`coNumber` onto a per-session child logger in both `run()` and `resume()`,
+  right after the attempt's `pipeline_runs.id` becomes known (`createRun`'s return
+  value, or the loaded failed run's `id` on resume). `runId` would join that same
+  binding — no schema change, since pino's child logger just merges an extra field
+  into the JSON output.
+- **Trigger for building it:** next time debugging a session with 2+ `pipeline_runs`
+  attempts actually requires disambiguating which structured log lines belong to which
+  attempt's `build_log`/`test_log`, rather than inferring it from timestamps or
+  stage-transition markers.
+
+Decision recorded here; `pipelineRunner.js` and `app/lib/logger.js` are unchanged —
+structured log lines still carry no `runId` field.
+
+## Phase 17 — SSO: provider selection & authorization model (decision only, not yet implemented)
+
+`app/lib/auth/authProvider.js` is today a hardcoded stand-in for "whichever provider is
+active" (`module.exports = localAuthProvider`) — a seam with nothing plugged into it.
+This phase decides how that seam will actually switch providers, and how
+authorization works once authentication is no longer always local, *without* building
+a second provider yet.
+
+- **`AUTH_PROVIDER` env var, default `local`.** `authProvider.js` selects a module by
+  this value instead of its current hardcoded `require`. Matches the existing
+  `authProvider`/`authenticate()` naming rather than introducing a new term.
+- **Password-specific functionality gates on a capability flag exposed by the active
+  provider module**, not scattered `AUTH_PROVIDER === 'local'` string checks. E.g.
+  `localAuthProvider.managesPasswordsLocally = true`; a future external provider sets
+  it `false`. Phase 11's self-service password-change page and the admin create-user
+  password field/`DEFAULT_USER_PASSWORD` substitution both gate on this flag — this
+  mirrors `authenticate()` itself already being a capability call sites use without
+  caring which provider implements it, so a third provider later doesn't require
+  re-auditing every call site that currently checks the raw env var.
+- **The `users` table and admin user-management screen survive external auth** — only
+  the password-specific parts of that flow disappear. External authentication only
+  proves identity; Apex still needs a local row to carry `is_admin`, `initials`, and
+  (via `user_repo_group_permissions`) which repo groups that person can touch. None of
+  that is authentication-related, so none of it goes away just because password
+  verification moves to an external IdP.
+- **Resolved: no `APP_USER_GROUP` env var — authorization stays local-user-row-based,
+  not group-claim-based.** Once an external provider only proves identity, access is
+  still decided by "does a matching local `users` row exist" (by username/email), exactly
+  like an unrecognized username fails to log in today — then that row's existing
+  `is_admin`/`user_repo_group_permissions` govern what they can do, same as now. A
+  coarse "is this person in group X" gate would be a second, less precise authorization
+  source sitting next to a model that's already more granular than any single group
+  check could be. It's also not generalizable across providers the way `authenticate()`
+  is: Azure AD's `groups` claim (object GUIDs, sometimes requiring a separate Graph call
+  past 200 group memberships) and LDAP's `memberOf` (DN strings, nested-group
+  resolution) work nothing alike — that logic would have to live inside each specific
+  provider implementation anyway, never as one provider-agnostic setting.
+  - **Revisit trigger:** only if auto-provisioning (creating a local `users` row
+    automatically on a person's first successful external login, instead of an admin
+    creating it by hand first) becomes a real feature ask. That's a materially bigger
+    feature than this phase scopes (it also raises what role/permissions an
+    auto-provisioned user gets), and would need per-provider group-handling logic, not
+    a generic env var.
+
+Decision recorded here; `app/lib/auth/authProvider.js` still hardcodes
+`localAuthProvider`, no capability flags exist yet, and no second provider is built —
+see "SSO" under Open/future for that remaining work.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
 
-- **SSO** — the `authProvider` interface supports it, but no second provider is built.
+- **SSO** — the `authProvider` interface supports it, and Phase 17 decided how provider
+  selection and authorization will work once one exists, but no second provider (LDAP,
+  Azure AD, etc.) is actually built yet.
 - **Non-NIM model provider** — the adapter interface isolates this, but switching
   provider request/response shape is unexercised.
 - **Branch-deletion staleness window** — on-demand detection (branch-list render,
@@ -798,11 +917,6 @@ Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a 
 - **Branch-head staleness check on resume-from-step retry** — whether a Phase 9 resume
   attempt re-validates the DEV branch hasn't moved (via a direct push from another
   engineer) since the last successfully completed step before trusting cached state.
-- **Spec/Communication Protocol cron interval** — Phase 8 decouples doc regeneration
-  from `worker.js` into a separate cron-scheduled script; the actual interval (and
-  whether it's a host cron/systemd timer vs. something container-native) isn't decided
-  yet, since it depends on the deployment target (also still undecided — see "Stack
-  decisions").
 
 ## Accepted risks
 
