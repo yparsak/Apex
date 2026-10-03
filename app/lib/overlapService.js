@@ -5,6 +5,7 @@
 const db = require('./db');
 const githubApi = require('./github/githubApi');
 const modelAdapter = require('./model/modelAdapter');
+const usageService = require('./model/usageService');
 
 const MAX_DIFF_CHARS = 12000;
 const MAX_PATCH_CHARS_PER_FILE = 2000;
@@ -56,7 +57,7 @@ function parseVerdict(raw) {
 }
 
 // checkOverlap(...) -> { matchedRequirementId } if overlap detected, else null.
-async function checkOverlap({ org, repo, branch, newRequirementText }) {
+async function checkOverlap({ org, repo, branch, newRequirementText, session }) {
   let diff;
   try {
     diff = await githubApi.compareCommits(org.name, repo.name, repo.default_branch_name, branch.branch_name);
@@ -89,7 +90,20 @@ async function checkOverlap({ org, repo, branch, newRequirementText }) {
 
   let raw;
   try {
-    raw = await modelAdapter.generate([{ role: 'user', content: prompt }]);
+    const result = await modelAdapter.generate([{ role: 'user', content: prompt }]);
+    raw = result.text;
+    // Best-effort: a usage-logging failure must never block the
+    // clarification loop, same spirit as the model-failure catch below.
+    usageService
+      .recordUsage({
+        callSite: 'overlap_check',
+        sessionId: session ? session.id : null,
+        repoId: repo.id,
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+      })
+      .catch(() => {});
   } catch (err) {
     return null; // model failure shouldn't block the clarification loop
   }

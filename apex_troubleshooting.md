@@ -130,6 +130,23 @@ Spec/Communication Protocol doc — each needs outbound network access at the ti
 call; note codegen's network is only open during that stage, before build/test seals
 it).
 
+**Every model call fails immediately with `"Model provider "<provider>" is locked
+(...)"`, with no delay and no NIM request in the logs at all.**
+The circuit breaker ([providerHealth.js](app/lib/model/providerHealth.js)) tripped on a
+prior quota/billing-shaped failure (HTTP 429/402, or a quota/billing/credit keyword) and
+is now failing every call fast, before even attempting one. Check `/admin/usage` for the
+provider's status and reason, and use the "Clear lock" button there once the underlying
+quota/billing issue is actually resolved — there's no auto-expiry, so it stays locked
+until an admin clears it.
+
+**Usage/cost numbers on `/admin/usage` look wrong or missing for a call that clearly
+happened.**
+Usage logging is best-effort and non-blocking by design (a `usage_events` write failure
+must never fail the clarification loop, codegen, or doc regen) - a gap there doesn't
+mean the model call itself failed. Only successful `generate()` calls write a row;
+failed/retried attempts (see above) don't, since NIM's error responses carry no token
+counts to log.
+
 ## Spec/Communication Protocol doc not updating
 
 This doc regenerates on `apex-spec-doc-worker`'s own interval

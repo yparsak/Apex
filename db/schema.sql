@@ -310,6 +310,52 @@ CREATE TABLE IF NOT EXISTS spec_doc_jobs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
+-- Phase 14: usage/cost reporting & model-provider circuit breaker
+-- ---------------------------------------------------------------------------
+
+-- One row per model call, written by app/lib/model/usageService.js from each
+-- call site (overlapService.js, clarificationService.js, codegenService.js,
+-- specDocService.js) right after a successful modelAdapter.generate() call -
+-- see ROADMAP.md Phase 14.
+CREATE TABLE IF NOT EXISTS usage_events (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  call_site ENUM('overlap_check', 'clarification', 'codegen', 'spec_doc') NOT NULL,
+  session_id INT UNSIGNED NULL,
+  repo_id INT UNSIGNED NULL,
+  provider VARCHAR(50) NOT NULL,
+  model VARCHAR(100) NOT NULL,
+  input_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  output_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  cache_read_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  cache_write_tokens INT UNSIGNED NOT NULL DEFAULT 0,
+  -- Computed at write time from app/lib/model/pricing.js's lookup, not
+  -- derived later, so historical rows stay accurate if pricing changes.
+  cost_usd DECIMAL(12, 6) NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_usage_events_session (session_id),
+  KEY idx_usage_events_repo (repo_id),
+  KEY idx_usage_events_created_at (created_at),
+  CONSTRAINT fk_usage_events_session FOREIGN KEY (session_id) REFERENCES sessions (id),
+  CONSTRAINT fk_usage_events_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- One row per provider, upserted by app/lib/model/providerHealth.js -
+-- existence of a row isn't the signal (unlike pipeline_locks); status is.
+-- 'warning' is reachable in the schema for a future admin action, but
+-- nothing automatically transitions a provider into it yet - no NIM quota is
+-- knowable in advance to compare against (see ROADMAP.md Phase 14 Open).
+CREATE TABLE IF NOT EXISTS model_provider_health (
+  provider VARCHAR(50) NOT NULL,
+  status ENUM('healthy', 'warning', 'locked') NOT NULL DEFAULT 'healthy',
+  reason VARCHAR(500) NULL,
+  locked_at TIMESTAMP NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (provider)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is
 -- already taken by the AI-pipeline sessions table above.
 -- ---------------------------------------------------------------------------

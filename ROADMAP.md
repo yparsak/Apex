@@ -714,12 +714,70 @@ Open / undecided for this phase:
 - Whether locking should happen at pipeline *entry* (before `worker.js` starts a run) in
   addition to the call-site check inside `modelAdapter.js`, to avoid leaving partial
   pipeline state behind on an already-known-bad provider.
-- Recovery semantics: whether a lock auto-expires (e.g. a daily quota reset) or always
-  requires a manual admin "clear lock" action on the admin page.
 - Whether "credits" stays purely a reporting label for cost/tokens, or becomes an actual
   allocated budget per org/repo-group later — this phase assumes reporting only.
 - Exact warning threshold (e.g. 80% of a known quota) before flipping to `warning`
   state, if a hard quota is even knowable in advance for the provider in use.
+
+**Implementation notes (decisions made while building this phase):**
+- **`modelAdapter.generate(messages)` now returns `{text, usage, provider, model}`**
+  instead of a bare string. Usage capture and cost attribution deliberately live at each
+  of the four call sites (`overlapService.js`, `clarificationService.js`,
+  `codegenService.js`, `specDocService.js`), not inside `modelAdapter.js` itself —
+  `modelAdapter.js` only gates calls behind the circuit breaker, which is genuinely
+  provider-level state, not something tied to any one call site's session/repo context.
+  Each call site writes its own `usage_events` row right after a successful `generate()`
+  call, via the new `app/lib/model/usageService.js`.
+- **Usage is logged only for successful model calls**, not failed attempts. NIM's error
+  responses carry no usage data, and `nvidiaNimAdapter.js`'s own internal retry loop
+  (`MAX_ATTEMPTS`) already absorbs transient failures before `modelAdapter.js` ever sees
+  them — so "one row per model call" in practice means one row per call that actually
+  returned content. Usage-event writes are themselves best-effort (`.catch(() => {})` at
+  every call site): a logging failure must never block the clarification loop, codegen,
+  or doc regen, same spirit as this codebase's existing "model failure shouldn't block"
+  pattern (see `overlapService.js`'s diff/model try/catch blocks).
+- **`checkOverlap` and `runModelLoop` gained a `session` parameter**, and
+  `codegenService.runCodegen` gained a `sessionId` param threaded through
+  `pipelineRunner.js`'s `codegenStep` — needed purely for usage-event attribution;
+  neither function used `session` for any other purpose before this phase.
+  `specDocService.js` passes `sessionId: null` — repo-level doc regen has no session to
+  attribute to, same as it has no CO.
+- **Circuit breaker lives in `app/lib/model/providerHealth.js`**, backed by a new
+  `model_provider_health` table (one row per provider, upserted — existence isn't the
+  signal, unlike `pipeline_locks`; `status` is). `modelAdapter.generate()` calls
+  `assertHealthy()` before every attempt and `recordFailure()` after every failure;
+  only an error classified as quota/billing-shaped (HTTP 429/402, or
+  `/quota|billing|credit|insufficient/i` in the message) actually locks it — a transient
+  network error is a no-op, since `nvidiaNimAdapter.js` already retries those
+  internally and they say nothing about remaining quota.
+- **Resolved: lock point is call-site only**, not pipeline entry. Keeping it inside
+  `modelAdapter.js` means every one of the four call sites gets the fail-fast check for
+  free with no per-call-site wiring; adding a second check at pipeline entry would only
+  save a clone/build/test cycle's wall-clock on an already-known-bad provider, which this
+  phase doesn't resolve — left open above.
+- **Resolved: recovery is manual-only**, via a "Clear lock" button on `/admin/usage`
+  (`POST /admin/usage/providers/:provider/clear-lock`, logged to `admin_audit_log` same
+  as `/admin/locks`' force-unlock). No auto-expiry — this project has no reliable signal
+  for *when* a given provider's quota actually resets, so guessing one would be worse
+  than requiring a deliberate admin action.
+- **`warning` status is schema-only for now** — `model_provider_health.status` supports
+  it and the admin page would render it correctly, but nothing automatically transitions
+  a provider into it, since no hard NIM quota is knowable in advance to compare usage
+  against (same open question the roadmap already named). Only `healthy` ⇄ `locked` are
+  actually reachable today.
+- **Pricing**: `app/lib/model/pricing.js` is a plain `model -> $/MTok` object with a
+  `{0, 0, 0, 0}` default for any unlisted model — the table starts empty since every
+  model in use today (self-hosted NIM) is genuinely free, not just unpriced.
+  `usageService.recordUsage` calls it at write time, per the roadmap's "not derived
+  later" requirement.
+- **New admin page `/admin/usage`** (`app/routes/admin/usage.js` /
+  `views/admin/usage.ejs`), added to `views/admin/partials/nav.ejs` alongside the
+  existing admin screens. A `?from=&to=` date-range query param (default: trailing 30
+  days) drives every section — summary cards, provider health + clear-lock, breakdown by
+  org/repo-group, breakdown by call site, and a daily trend table. No charting library
+  in this stack (EJS, no client-side framework — see Stack decisions), so "trend over
+  time" is a plain table of day → requests/tokens/cost, consistent with every other
+  admin screen here being server-rendered tables.
 
 ## Open / future (not scheduled)
 

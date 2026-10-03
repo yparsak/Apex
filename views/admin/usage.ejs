@@ -1,0 +1,124 @@
+<%- include('../partials/head', { title: 'Admin - Usage', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'usage' }) %>
+    <h1>Usage &amp; cost</h1>
+    <p class="placeholder">
+      Token usage and cost per model call, reporting only - no spend caps or enforcement yet.
+      Every NIM model in use today prices at $0 (self-hosted), so costs below will read $0 until
+      a priced model is configured in app/lib/model/pricing.js.
+    </p>
+
+    <form method="GET" action="/admin/usage" class="filter-form">
+      <label>From <input type="date" name="from" value="<%= from %>"></label>
+      <label>To <input type="date" name="to" value="<%= to %>"></label>
+      <button type="submit">Apply</button>
+    </form>
+
+    <div class="stat-cards">
+      <div class="stat-card">
+        <div class="stat-card-label">Total requests</div>
+        <div class="stat-card-value"><%= summary.requests.toLocaleString() %></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Total tokens</div>
+        <div class="stat-card-value"><%= summary.tokens.toLocaleString() %></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Total cost</div>
+        <div class="stat-card-value">$<%= summary.costUsd.toFixed(4) %></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-label">Avg cost / request</div>
+        <div class="stat-card-value">$<%= summary.avgCostPerRequest.toFixed(6) %></div>
+      </div>
+    </div>
+
+    <h2>Model provider health</h2>
+    <p class="placeholder">
+      Checked by the model adapter before every call - a locked provider fails fast instead of
+      every in-flight call failing individually. Recovery is manual only; there's no auto-expiry.
+    </p>
+    <% if (!providers.length) { %>
+      <p class="placeholder">No provider has recorded a status yet - all providers are assumed healthy.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>Provider</th><th>Status</th><th>Reason</th><th>Locked since</th><th></th></tr></thead>
+        <tbody>
+          <% providers.forEach(function(p) { %>
+          <tr>
+            <td><%= p.provider %></td>
+            <td><span class="health-badge health-<%= p.status %>"><%= p.status %></span></td>
+            <td><%= p.reason || '—' %></td>
+            <td><%= p.locked_at ? p.locked_at.toISOString().slice(0, 16).replace('T', ' ') : '—' %></td>
+            <td>
+              <% if (p.status === 'locked') { %>
+              <form method="POST" action="/admin/usage/providers/<%= p.provider %>/clear-lock" class="row-form">
+                <button type="submit" class="danger-button">Clear lock</button>
+              </form>
+              <% } %>
+            </td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+
+    <h2>By org / repo group</h2>
+    <% if (!byRepoGroup.length) { %>
+      <p class="placeholder">No usage recorded in this range.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>Org</th><th>Repo group</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>
+          <% byRepoGroup.forEach(function(r) { %>
+          <tr>
+            <td><%= r.orgName || '—' %></td>
+            <td><%= r.repoGroupName || '—' %></td>
+            <td><%= Number(r.requests).toLocaleString() %></td>
+            <td><%= Number(r.tokens).toLocaleString() %></td>
+            <td>$<%= Number(r.costUsd).toFixed(4) %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+
+    <h2>By call site</h2>
+    <% if (!byCallSite.length) { %>
+      <p class="placeholder">No usage recorded in this range.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>Call site</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>
+          <% byCallSite.forEach(function(c) { %>
+          <tr>
+            <td><%= c.callSite %></td>
+            <td><%= Number(c.requests).toLocaleString() %></td>
+            <td><%= Number(c.tokens).toLocaleString() %></td>
+            <td>$<%= Number(c.costUsd).toFixed(4) %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+
+    <h2>Trend</h2>
+    <% if (!trend.length) { %>
+      <p class="placeholder">No usage recorded in this range.</p>
+    <% } else { %>
+      <table class="admin-table">
+        <thead><tr><th>Day</th><th>Requests</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>
+          <% trend.forEach(function(t) { %>
+          <tr>
+            <td><%= t.day.toISOString().slice(0, 10) %></td>
+            <td><%= Number(t.requests).toLocaleString() %></td>
+            <td><%= Number(t.tokens).toLocaleString() %></td>
+            <td>$<%= Number(t.costUsd).toFixed(4) %></td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+  </main>
+<%- include('../partials/foot') %>

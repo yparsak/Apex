@@ -10,17 +10,35 @@ Change Order lifecycle.
 All model calls go through one function:
 
 ```
-generate(messages) -> Promise<string>
+generate(messages) -> Promise<{ text, usage, provider, model }>
 ```
 
 `messages` is a standard chat-style array (`{ role: 'system' | 'user' | 'assistant',
-content }`). [app/lib/model/modelAdapter.js](app/lib/model/modelAdapter.js) just
-re-exports the current concrete implementation
-([nvidiaNimAdapter.js](app/lib/model/nvidiaNimAdapter.js)) — no call site imports the
-NIM adapter directly, so swapping providers later means changing one `require`, not
-every call site. (Note: a Phase 14 change to this contract — `generate()` returning
-`{text, usage}` so token usage can be captured for cost reporting — is designed but not
-yet implemented; today it returns a bare string.)
+content }`). [app/lib/model/modelAdapter.js](app/lib/model/modelAdapter.js) wraps the
+current concrete implementation
+([nvidiaNimAdapter.js](app/lib/model/nvidiaNimAdapter.js)) with two provider-level
+concerns that don't belong in any one call site — no call site imports the NIM adapter
+directly, so swapping providers later means changing one `require`, not every call
+site:
+
+- **Circuit breaker**: before attempting a call, checks
+  [providerHealth.js](app/lib/model/providerHealth.js)'s DB-backed status for the active
+  provider and fails fast with a clear error if it's `locked`. After a failed call, a
+  quota/billing-shaped error (HTTP 429/402, or a quota/billing/credit keyword in the
+  message) locks the provider; a transient network error does not. See
+  [SPEC.md](SPEC.md)'s Observability section and `/admin/usage` for the admin-facing
+  status + manual "Clear lock" action.
+- **Usage passthrough**: `usage` (`{inputTokens, outputTokens}`, parsed off NIM's
+  response) and `provider`/`model` are returned alongside `text` so each call site can
+  log its own `usage_events` row via
+  [usageService.js](app/lib/model/usageService.js) — cost attribution needs
+  session/repo context `modelAdapter.js` itself doesn't have, so the actual
+  `usageService.recordUsage(...)` call happens at each of the four call sites below,
+  not here.
+
+Every call site below now does `const { text, usage, provider, model } =
+await modelAdapter.generate(messages)` and uses `text` wherever it used to use the bare
+string `generate()` resolved with before Phase 14.
 
 ### Configuration
 
@@ -182,6 +200,10 @@ tree — the model is told this is authoritative guidance, not repo content it a
 
 ## Known failure modes
 
+- **Provider locked** — surfaces as `"Model provider "<provider>" is locked (<reason>) -
+  clear the lock from /admin/usage before retrying."`, thrown by `modelAdapter.js`
+  before any request is even attempted. Only clears via the manual admin action on
+  `/admin/usage` — there's no auto-expiry.
 - **Blank reply exhausting retries** — surfaces as `"NVIDIA NIM returned no usable
   content (both content and reasoning_content were blank)"`.
 - **Transport error exhausting retries** — surfaces as `"NVIDIA NIM returned HTTP

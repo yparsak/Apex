@@ -124,8 +124,8 @@ async function cloneStep(containerId, org, repo, branch) {
   await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'config', 'user.name', 'Apex']);
 }
 
-async function codegenStep({ containerId, org, repo, branch, requirementsText }) {
-  await codegenService.runCodegen({ containerId, org, repo, branch, repoRoot: WORKSPACE, requirementsText });
+async function codegenStep({ containerId, org, repo, branch, requirementsText, sessionId }) {
+  await codegenService.runCodegen({ containerId, org, repo, branch, repoRoot: WORKSPACE, requirementsText, sessionId });
 
   const commitResult = await dockerRunner.exec(containerId, [
     'sh',
@@ -225,7 +225,7 @@ async function run(sessionId) {
 
     await setStage(runId, 'codegen', log);
     const requirementsText = requirements.map((r) => `- ${r.requirement_text}`).join('\n');
-    await codegenStep({ containerId, org, repo, branch, requirementsText });
+    await codegenStep({ containerId, org, repo, branch, requirementsText, sessionId });
 
     // Seal the sandbox before build/test run (see ROADMAP.md Phase 7) - no
     // registry egress once codegen's model-adapter calls are done.
@@ -312,7 +312,7 @@ async function resume(sessionId) {
       await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'clean', '-fd']);
 
       await setStage(runId, 'codegen', log);
-      await codegenStep({ containerId, org, repo, branch, requirementsText });
+      await codegenStep({ containerId, org, repo, branch, requirementsText, sessionId });
 
       await dockerRunner.disconnectNetwork(containerId, SANDBOX_NETWORK);
 

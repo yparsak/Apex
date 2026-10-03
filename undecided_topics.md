@@ -36,16 +36,20 @@ not open questions.
   Currently kept separate "unless that proves awkward in practice" — a provisional, not
   final, decision.
 
-## Usage/Cost Reporting & Model Provider (Phase 14 — not yet built)
+## Usage/Cost Reporting & Model Provider (Phase 14)
 
-- Whether the circuit breaker should lock at **pipeline entry** (before `worker.js` starts a
-  run) in addition to the per-call-site check in `modelAdapter.js`.
-- **Recovery semantics** for a locked provider — auto-expiry (e.g., on a daily quota reset)
-  vs. requiring manual admin "clear lock."
+Phase 14 is built — reporting dashboard at `/admin/usage`, `usage_events` logging, and a
+DB-backed circuit breaker in `modelAdapter.js`. Recovery semantics were resolved to
+manual-only (admin "clear lock" action, no auto-expiry — see ROADMAP.md Phase 14
+implementation notes). Still open:
+
+- Whether the circuit breaker should also lock at **pipeline entry** (before `worker.js`
+  starts a run), in addition to the per-call-site check already in `modelAdapter.js`.
 - Whether **"credits"** stays a pure reporting label or becomes an actual allocated budget
   per org/repo-group later.
 - The exact **warning threshold** (e.g., 80% of quota) before flipping provider health to
-  `warning`, contingent on whether a hard quota is even knowable for the given provider.
+  `warning`, contingent on whether a hard quota is even knowable for the given provider —
+  `warning` is schema-supported but nothing sets it automatically yet.
 
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 

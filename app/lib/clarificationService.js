@@ -9,6 +9,7 @@
 const db = require('./db');
 const githubApi = require('./github/githubApi');
 const modelAdapter = require('./model/modelAdapter');
+const usageService = require('./model/usageService');
 const overlapService = require('./overlapService');
 const auditLog = require('./auditLog');
 const repoClarificationInstructions = require('./repoClarificationInstructions');
@@ -69,11 +70,22 @@ function toModelMessages(tree, conversation, instructions) {
 // Resolves FETCH_FILE round-trips inline against a scratch copy of the
 // message list; only the final question or finalize payload is returned for
 // the caller to persist.
-async function runModelLoop(messages, org, repo, branch) {
+async function runModelLoop(messages, org, repo, branch, session) {
   const scratch = messages.slice();
 
   for (let attempt = 0; attempt < MAX_FILE_FETCHES; attempt++) {
-    const reply = (await modelAdapter.generate(scratch)).trim();
+    const result = await modelAdapter.generate(scratch);
+    const reply = result.text.trim();
+    usageService
+      .recordUsage({
+        callSite: 'clarification',
+        sessionId: session.id,
+        repoId: repo.id,
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+      })
+      .catch(() => {});
 
     const fetchMatch = reply.match(/^FETCH_FILE:\s*(.+)$/);
     if (fetchMatch) {
@@ -110,7 +122,7 @@ async function runModelLoop(messages, org, repo, branch) {
 }
 
 async function finalizeRequirement({ session, branch, org, repo, user, text }) {
-  const overlap = await overlapService.checkOverlap({ org, repo, branch, newRequirementText: text });
+  const overlap = await overlapService.checkOverlap({ org, repo, branch, newRequirementText: text, session });
 
   const [result] = await db.query(
     'INSERT INTO session_requirements (session_id, requirement_text, overlap_flag_requirement_id, confirm_status) VALUES (?, ?, ?, ?)',
@@ -161,7 +173,7 @@ async function submitMessage({ session, branch, org, repo, user, text }) {
   ]);
   const messages = toModelMessages(tree, conversation, instructions);
 
-  const result = await runModelLoop(messages, org, repo, branch);
+  const result = await runModelLoop(messages, org, repo, branch, session);
 
   if (result.kind === 'question') {
     await db.query("INSERT INTO conversations (session_id, role, content) VALUES (?, 'assistant', ?)", [

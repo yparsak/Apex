@@ -7,6 +7,7 @@
 // copy. Mirrors clarificationService.js's FETCH_FILE loop shape, plus WRITE_FILE.
 const githubApi = require('../github/githubApi');
 const modelAdapter = require('../model/modelAdapter');
+const usageService = require('../model/usageService');
 const dockerRunner = require('../docker/dockerRunner');
 const repoClarificationInstructions = require('../repoClarificationInstructions');
 
@@ -59,7 +60,7 @@ function isUnsafePath(path) {
 // returns a partial result) if the model doesn't emit DONE within MAX_TURNS,
 // or emits DONE without writing anything - the caller treats either as a
 // codegen-stage pipeline failure, same as any other step failure.
-async function runCodegen({ containerId, org, repo, branch, repoRoot, requirementsText }) {
+async function runCodegen({ containerId, org, repo, branch, repoRoot, requirementsText, sessionId }) {
   const [tree, instructions] = await Promise.all([
     fetchTree(org, repo, branch),
     repoClarificationInstructions.getInstructions(repo.id),
@@ -69,7 +70,18 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
   const written = new Map(); // repo-relative path -> content, this session's own edits
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const reply = (await modelAdapter.generate(messages)).trim();
+    const result = await modelAdapter.generate(messages);
+    const reply = result.text.trim();
+    usageService
+      .recordUsage({
+        callSite: 'codegen',
+        sessionId,
+        repoId: repo.id,
+        provider: result.provider,
+        model: result.model,
+        usage: result.usage,
+      })
+      .catch(() => {});
     messages.push({ role: 'assistant', content: reply });
 
     if (reply === 'DONE') {

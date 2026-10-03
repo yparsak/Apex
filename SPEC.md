@@ -62,7 +62,9 @@ bind-mounted host directory.
   SDK client.
 - **Model backend:** a pluggable adapter
   ([app/lib/model/modelAdapter.js](app/lib/model/modelAdapter.js)) with one
-  implementation, NVIDIA NIM. See
+  implementation, NVIDIA NIM. `generate(messages)` resolves
+  `{text, usage, provider, model}` — token usage and per-call-site cost attribution
+  (see Usage & cost reporting below) were added in Phase 14. See
   [apex_nim_integration.md](apex_nim_integration.md) for the full contract.
 - **Logging:** `pino`, structured, per-process
   ([app/lib/logger.js](app/lib/logger.js)) — see Observability below.
@@ -133,11 +135,22 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 - `audit_log` — user-facing actions (clarification messages, approvals, branch
   lifecycle changes, pipeline outcomes).
 - `admin_audit_log` — admin-only mutations (user/org/repo CRUD, permission grants,
-  force-unlock), kept separate from `audit_log` by convention.
+  force-unlock, provider lock-clear), kept separate from `audit_log` by convention.
 - `blocked_allowlist_alerts` — a recorded 403 from either `createBranchRef` (clean HTTP
   status) or a push (text-heuristic match on git's stderr) — surfaced on `/admin/alerts`.
 - `lock_contention_events` — every time a second user's lock-acquire attempt lost to an
   existing holder — surfaced alongside live locks on `/admin/locks`.
+
+**Usage & cost reporting**
+- `usage_events` — one append-only row per successful model call (`call_site`,
+  `session_id`/`repo_id` attribution, provider, model, token counts, `cost_usd` computed
+  at write time from [app/lib/model/pricing.js](app/lib/model/pricing.js) so historical
+  rows stay accurate if pricing changes later). Written by
+  [usageService.js](app/lib/model/usageService.js) from each of the four model call
+  sites, not by `modelAdapter.js` itself.
+- `model_provider_health` — one upserted row per provider (`healthy`/`warning`/`locked` +
+  reason), the DB-backed state behind the model-provider circuit breaker (below). Surfaced
+  and clearable on `/admin/usage`.
 
 ## Lifecycle of a Change Order
 
@@ -252,10 +265,18 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 - **Build/test output** for a specific pipeline run lives in `pipeline_runs.build_log`/
   `test_log` in the database, surfaced on the branch/session view — not in any
   container or process log.
+- **Usage & cost** (`/admin/usage`): summary totals, breakdown by org/repo-group and by
+  call site, and a daily trend, all over a `?from=&to=` date range — reporting only, no
+  spend caps. The same page surfaces the model-provider circuit breaker's status
+  (`healthy`/`warning`/`locked`, backed by `model_provider_health`) with a manual
+  "Clear lock" action; there's no auto-expiry. `modelAdapter.js` checks this status
+  before every call and fails fast if locked, and locks it if a call fails with a
+  quota/billing-shaped error (HTTP 429/402, or a quota/billing/credit keyword) — a
+  transient network error never locks it.
 
 ## What's deliberately not built yet
 
 See [ROADMAP.md](ROADMAP.md)'s "Open / future" section and
 [undecided_topics.md](undecided_topics.md) for the full, current list (deployment
-target, non-NIM model provider, SSO, usage/cost reporting, etc.). Those are tracked
-there rather than duplicated here so there's a single source of truth.
+target, non-NIM model provider, SSO, etc.). Those are tracked there rather than
+duplicated here so there's a single source of truth.

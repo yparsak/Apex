@@ -5,6 +5,7 @@
 const db = require('../db');
 const githubApi = require('../github/githubApi');
 const modelAdapter = require('../model/modelAdapter');
+const usageService = require('../model/usageService');
 const { createLogger } = require('../logger');
 
 const logger = createLogger('spec-doc-worker');
@@ -57,10 +58,24 @@ async function generateForRepo(job) {
   const org = { name: repo.org_name };
 
   const context = await buildContext(org, repo, repo.default_branch_name);
-  const content = await modelAdapter.generate([
+  const result = await modelAdapter.generate([
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: context },
   ]);
+  const content = result.text;
+  // Repo-level doc regen has no session to attribute to (see ROADMAP.md
+  // Phase 8) - sessionId is null, same as every other repo-wide, not
+  // per-CO, record in this codebase.
+  usageService
+    .recordUsage({
+      callSite: 'spec_doc',
+      sessionId: null,
+      repoId: repo.id,
+      provider: result.provider,
+      model: result.model,
+      usage: result.usage,
+    })
+    .catch(() => {});
 
   await db.query(
     `INSERT INTO repo_documents (repo_id, doc_type, co_number, content) VALUES (?, 'spec_communication_protocol', '', ?)
