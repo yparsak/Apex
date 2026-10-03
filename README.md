@@ -1,14 +1,50 @@
 # Apex
 
-Internal AI-driven change-order implementation tool. An engineer picks a repo and
-branch, clarifies a Change Order (CO) with an LLM, and Apex implements it in a
-sandboxed container and pushes the result to a DEV branch.
+Apex is an internal tool that turns a Change Order (CO) into real, working code — on a
+dedicated development branch, ready for human review.
 
-See [ROADMAP.md](ROADMAP.md) for the full build plan and design decisions, and
-[docs/Phase1_setup.md](docs/Phase1_setup.md) for detailed first-time setup and
-troubleshooting.
+An engineer picks a repository and branch, describes the change, and clarifies it with
+an AI assistant that asks grounded, repo-aware questions before anything is written.
+Once the requirements are confirmed and the engineer explicitly approves, Apex
+implements the change in an isolated, network-sealed sandbox, builds it, runs its
+tests, and — only if everything passes — pushes the result to a `dev/**` branch.
 
-## First-time setup
+**Apex stops there.** It never opens a pull request and never merges. Code review,
+promotion to a test branch, and the merge to `main` remain exactly the human-driven
+process they were before Apex existed — Apex's job is to get an engineer to a working
+DEV branch faster, not to make the final call.
+
+## How it works, in short
+
+1. **Pick a repo and branch.** Start fresh off the repo's default branch, or continue
+   an existing one — Apex tracks everything by `(repo, Change Order)`.
+2. **Clarify.** Describe what you need; the AI asks questions grounded in the actual
+   codebase (it reads file contents on demand, not generically) until the requirement
+   is unambiguous. If it looks like the request overlaps work already done on this
+   branch, Apex flags it — a human always confirms or overrides, nothing is ever
+   silently skipped.
+3. **Approve.** Nothing runs until you explicitly approve. Adding a new requirement
+   after approval (but before it starts) automatically asks for re-approval — scope
+   never silently expands.
+4. **Implement, in isolation.** A throwaway, network-sealed container clones the repo,
+   writes the code, builds it, and tests it. If a step fails, the container is kept
+   alive so the run can resume from where it died instead of starting over.
+5. **Push to DEV.** Only a passing build/test result ever gets pushed, and only to a
+   `dev/**` branch — a GitHub App scoped to exactly that, with no merge authority at
+   all.
+
+## Documentation
+
+| Document | For |
+|---|---|
+| [SPEC.md](SPEC.md) | Engineers who want to understand the architecture, data model, and full lifecycle under the hood. |
+| [apex_nim_integration.md](apex_nim_integration.md) | How Apex talks to its LLM backend, and exactly how it decides what repo content to send on each call. |
+| [apex_troubleshooting.md](apex_troubleshooting.md) | Diagnosing a stuck session, a failed pipeline, a model error, or other operational issues. |
+| [ROADMAP.md](ROADMAP.md) | The full build plan, design decisions, and accepted risks behind the current system. |
+| [undecided_topics.md](undecided_topics.md) | What's genuinely still open or unbuilt. |
+| [docs/](docs) | Setup, Docker architecture, GitHub App key rotation, and the reasoning behind Apex's human-approval gates. |
+
+## Quick start
 
 ```
 cp .env.example .env
@@ -16,33 +52,19 @@ make setup
 make create-admin ARGS='--username=yourname --password=yourpassword --initials=XX --admin'
 ```
 
-See [docs/Phase1_setup.md](docs/Phase1_setup.md) for what each step does.
-
-## Running the app
-
-Apex is made up of several independent processes, each started as its own
-container. All of them need `apex-mariadb` up first (`make dev`/`make worker`/
-`make spec-doc-worker` all start it automatically via their `db-up` dependency).
-
-| Command                | Container                 | What it runs                                                             |
-|------------------------|----------------------------|----------------------------------------------------------------------------|
-| `make dev`             | `apex-app`                 | The web app (Express + EJS). Visit http://localhost:3000/login.           |
-| `make worker`          | `apex-worker`               | `worker.js` — polls for queued sessions and drives each one's AI pipeline (clone/codegen/build/test/push) in its own sandbox container. |
-| `make spec-doc-worker` | `apex-spec-doc-worker`      | `specDocWorker.js` — regenerates the Spec/Communication Protocol doc on its own interval, decoupled from the pipeline worker. |
-
-`make dev` alone is enough to log in and browse repos/branches, but **AI pipeline
-sessions need `make worker` running too** — without it, sessions just sit in
-`queued` forever. Run each in its own terminal (they're detached containers, so you
-don't strictly need to keep the terminal open, but running one target at a time
-keeps the output readable).
+Then, in separate terminals:
 
 ```
-make dev
-make worker
-make spec-doc-worker   # only needed if you're exercising Spec doc regeneration
+make dev              # web app -> http://localhost:3000/login
+make worker           # AI pipeline worker - required for sessions to actually run
+make spec-doc-worker  # optional, only needed to exercise doc regeneration
 ```
 
-To stop everything:
+See [docs/Phase1_setup.md](docs/Phase1_setup.md) for what each step does and
+troubleshooting for first-time setup, or [apex_troubleshooting.md](apex_troubleshooting.md)
+for issues after setup succeeds.
+
+### Stopping everything
 
 ```
 make stop       # removes apex-app, apex-worker, apex-spec-doc-worker
@@ -50,39 +72,12 @@ make db-down    # also stops apex-mariadb (keeps the data volume)
 make clean      # full reset - also removes the data volume and network
 ```
 
-## Viewing logs
-
-Each process logs to its own container's stdout/stderr — there's no centralized log
-file.
-
-```
-make logs                              # tails apex-app (the web process)
-docker logs -f apex-worker              # the pipeline worker
-docker logs -f apex-spec-doc-worker     # the spec-doc regeneration worker
-docker logs -f apex-mariadb             # the database
-```
-
-(Substitute `podman` for `docker` if you're running with `RUNTIME=podman`.)
-
-Drop `-f` to print what's logged so far and exit, instead of following live. Each
-sandboxed pipeline session also gets its own ephemeral container (not listed above —
-created and torn down per session); its build/test output is captured into the
-`pipeline_runs` table rather than left in container logs, so use the branch/session
-view in the UI to see that, not `docker logs`.
+(Substitute `podman` for `docker` anywhere above with `RUNTIME=podman`.)
 
 ## Project structure
 
 - `app/` — Express routes, views (EJS), and `lib/` service modules.
-- `worker.js` — AI pipeline poller (see `make worker` above).
+- `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
 - `specDocWorker.js` — Spec/Communication Protocol doc regeneration loop.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.
-
-## Connect to Database
-```
-docker exec -it apex-mariadb mariadb -uroot -p<rootpass> apex
-
-docker exec -it apex-mariadb mariadb -uroot -p"$(grep '^DB_ROOT_PASSWORD=' .env | cut -d'=' -f2)" "$(grep '^DB_NAME=' .env | cut -d'=' -f2)"
-
-```
-
