@@ -11,6 +11,7 @@ const adminRoutes = require('./app/routes/admin');
 const reposRoutes = require('./app/routes/repos');
 const documentsRoutes = require('./app/routes/documents');
 const apiAdminRoutes = require('./app/routes/apiAdmin');
+const authProvider = require('./app/lib/auth/authProvider');
 const { createLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
@@ -54,6 +55,14 @@ app.use(
     },
   })
 );
+
+// Exposed to every view via res.locals merge (see ROADMAP.md Phase 17) so
+// partials/head's "Change Password" link can gate on it without every route
+// handler threading it through render options.
+app.use((req, res, next) => {
+  res.locals.managesPasswordsLocally = authProvider.managesPasswordsLocally;
+  next();
+});
 
 app.use(authRoutes);
 app.use(accountRoutes);

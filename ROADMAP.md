@@ -893,7 +893,7 @@ staying entirely separate.
 - **No change to `app/lib/logger.js`** — `createLogger`/`cache` are untouched; this phase is
   entirely a call-site change to what gets merged into an existing child logger.
 
-## Phase 17 — SSO: provider selection & authorization model (decision only, not yet implemented)
+## Phase 17 — SSO: provider selection & authorization model
 
 `app/lib/auth/authProvider.js` is today a hardcoded stand-in for "whichever provider is
 active" (`module.exports = localAuthProvider`) — a seam with nothing plugged into it.
@@ -937,17 +937,42 @@ a second provider yet.
     auto-provisioned user gets), and would need per-provider group-handling logic, not
     a generic env var.
 
-Decision recorded here; `app/lib/auth/authProvider.js` still hardcodes
-`localAuthProvider`, no capability flags exist yet, and no second provider is built —
+**Implementation notes (decisions made while building this phase):**
+- **`authProvider.js`** is now a small registry (`{ local: localAuthProvider }`) keyed by
+  `AUTH_PROVIDER` (default `'local'`), throwing on an unrecognized value rather than
+  silently falling back — a typo'd env var should fail startup, not quietly authenticate
+  against the wrong provider.
+- **`localAuthProvider.managesPasswordsLocally = true`** is exported alongside
+  `authenticate`, per the decision above.
+- **`managesPasswordsLocally` reaches every view via `res.locals`** (`app.js`, set once
+  in middleware right after the session store is wired up) rather than every route
+  threading it through `res.render(...)` options — `partials/head.ejs`'s "Change
+  Password" nav link needed it and is included from 15+ views with otherwise-unrelated
+  render options. `admin/users.js` still passes it explicitly alongside
+  `defaultPasswordSet` since that route already builds an explicit options object and
+  the two flags are read together there.
+- **`admin/users.js`'s POST handler** only consults `DEFAULT_USER_PASSWORD`/
+  `req.body.password` when `managesPasswordsLocally` is true; otherwise it creates the
+  user with password `''`. That row's `password_hash` ends up a bcrypt hash of an empty
+  string, which is fine: a provider with `managesPasswordsLocally = false` never reads
+  `password_hash` from `authenticate()` in the first place (identity is proven
+  externally), so the column goes unused rather than needing a schema change to allow
+  `NULL`.
+- **`/account/password`'s GET and POST handlers** redirect to `/` when
+  `managesPasswordsLocally` is false, same as the nav link disappearing — belt-and-
+  suspenders against someone hitting the URL directly without the link ever being
+  shown.
+
+No second provider is built yet (`AUTH_PROVIDER` has exactly one valid value today) —
 see "SSO" under Open/future for that remaining work.
 
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
 
-- **SSO** — the `authProvider` interface supports it, and Phase 17 decided how provider
-  selection and authorization will work once one exists, but no second provider (LDAP,
-  Azure AD, etc.) is actually built yet.
+- **SSO** — `AUTH_PROVIDER` selection, the `managesPasswordsLocally` capability flag, and
+  the local-user-row authorization model are all built (Phase 17), but no second
+  provider (LDAP, Azure AD, etc.) is actually built yet.
 - **Non-NIM model provider** — the adapter interface isolates this, but switching
   provider request/response shape is unexercised.
 - **Branch-deletion staleness window** — on-demand detection (branch-list render,

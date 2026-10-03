@@ -23,4 +23,7 @@ async function authenticate({ username, password }) {
   };
 }
 
-module.exports = { authenticate };
+// Capability flag consumed by password-specific call sites (admin create-user,
+// self-service password change) instead of scattered AUTH_PROVIDER === 'local'
+// checks (see ROADMAP.md Phase 17).
+module.exports = { authenticate, managesPasswordsLocally: true };

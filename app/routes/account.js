@@ -13,10 +13,13 @@ function renderForm(req, res, { error = null, success = false } = {}) {
 }
 
 router.get('/account/password', requireAuth, (req, res) => {
+  if (!authProvider.managesPasswordsLocally) return res.redirect('/');
   renderForm(req, res, {});
 });
 
 router.post('/account/password', requireAuth, async (req, res) => {
+  if (!authProvider.managesPasswordsLocally) return res.redirect('/');
+
   const currentPassword = req.body.current_password || '';
   const newPassword = req.body.new_password || '';
   const confirmPassword = req.body.confirm_password || '';

@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('../../lib/db');
+const authProvider = require('../../lib/auth/authProvider');
 const { logAdminAction } = require('../../lib/adminAudit');
 const { createUser } = require('../../lib/userService');
 
@@ -13,6 +14,7 @@ async function renderUsers(req, res, error) {
     user: req.session.user,
     users,
     error,
+    managesPasswordsLocally: authProvider.managesPasswordsLocally,
     defaultPasswordSet: Boolean(process.env.DEFAULT_USER_PASSWORD),
   });
 }
@@ -25,12 +27,16 @@ router.post('/', async (req, res) => {
   const username = (req.body.username || '').trim();
   // Phase 11: DEFAULT_USER_PASSWORD, when set, replaces the admin-entered
   // password on the create-user form (see ROADMAP.md Phase 11). Blank/unset
-  // leaves today's behavior - the admin's own form input - unchanged.
-  const password = process.env.DEFAULT_USER_PASSWORD || req.body.password || '';
+  // leaves today's behavior - the admin's own form input - unchanged. Gated
+  // on managesPasswordsLocally (Phase 17): once a provider authenticates
+  // externally, there's no admin-set password to collect at all.
+  const password = authProvider.managesPasswordsLocally
+    ? process.env.DEFAULT_USER_PASSWORD || req.body.password || ''
+    : '';
   const initials = (req.body.initials || '').trim().toUpperCase();
   const isAdmin = req.body.is_admin === 'on';
 
-  if (!username || !password || !/^[A-Z0-9]{1,10}$/.test(initials)) {
+  if (!username || (authProvider.managesPasswordsLocally && !password) || !/^[A-Z0-9]{1,10}$/.test(initials)) {
     return renderUsers(req, res, 'Username, password, and initials (letters/digits only) are required.');
   }
 

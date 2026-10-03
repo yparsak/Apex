@@ -12,7 +12,7 @@
       <% if (typeof user !== 'undefined' && user) { %>
         <a href="/documents">Documents</a>
         <% if (user.isAdmin) { %><a href="/admin/orgs">Admin</a><% } %>
-        <a href="/account/password">Change Password</a>
+        <% if (managesPasswordsLocally) { %><a href="/account/password">Change Password</a><% } %>
         <span class="topnav-user"><%= user.username %></span>
         <form method="POST" action="/logout" class="inline-form">
           <button type="submit" class="link-button">Logout</button>
