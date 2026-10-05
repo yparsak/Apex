@@ -47,16 +47,16 @@ DEV branch faster, not to make the final call.
 
 ### Download:
 ```txt
-curl -fsSL https://raw.githubusercontent.com/yparsak/Apex/main/install.sh -o /tmp/install.sh
-bash /tmp/install.sh
+curl -fsSL https://raw.githubusercontent.com/yparsak/Apex/main/scripts/download.sh -o /tmp/download.sh
+bash /tmp/download.sh
 ```
 
 ```
-cd /home/user/src/Apex
+cd ~/src/Apex
 cp .env.example .env
 ```
 
-Modify Apex/.env
+Modify .env
 
 ## Setup
 ```
