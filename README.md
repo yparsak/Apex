@@ -44,12 +44,24 @@ DEV branch faster, not to make the final call.
 | [undecided_topics.md](undecided_topics.md) | What's genuinely still open or unbuilt. |
 | [docs/](docs) | Setup, Docker architecture, GitHub App key rotation, and the reasoning behind Apex's human-approval gates. |
 
-## Quick start
+
+### Download:
+```txt
+curl -fsSL https://raw.githubusercontent.com/yparsak/Apex/main/install.sh -o /tmp/install.sh
+bash /tmp/install.sh
+```
 
 ```
+cd /home/user/src/Apex
 cp .env.example .env
+```
+
+Modify Apex/.env
+
+## Setup
+```
 make setup
-make create-admin ARGS='--username=yourname --password=yourpassword --initials=XX --admin'
+make create-admin ARGS='--username=admin --password=adminpassword --initials=AA --admin'
 ```
 
 Then, in separate terminals:
