@@ -2,10 +2,10 @@ require('dotenv').config();
 
 const specDocScanService = require('./app/lib/documents/specDocScanService');
 const specDocService = require('./app/lib/documents/specDocService');
-const { createLogger } = require('./app/lib/logger');
+const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
-const logger = createLogger('spec-doc-worker');
+const logger = initProcessLogger('spec-doc-worker');
 
 // One-shot script (see ROADMAP.md Phase 15), run on a nightly cadence by
 // whatever cron-like facility the deployment target provides (host crontab,

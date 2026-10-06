@@ -2,10 +2,10 @@ require('dotenv').config();
 
 const db = require('./app/lib/db');
 const pipelineRunner = require('./app/lib/pipeline/pipelineRunner');
-const { createLogger } = require('./app/lib/logger');
+const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
-const logger = createLogger('worker');
+const logger = initProcessLogger('worker');
 const POLL_INTERVAL_MS = Number(process.env.PIPELINE_POLL_INTERVAL_MS || 5000);
 
 function sleep(ms) {

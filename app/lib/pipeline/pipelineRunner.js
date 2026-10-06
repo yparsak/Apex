@@ -13,12 +13,15 @@ const pipelineConfig = require('./pipelineConfig');
 const codegenService = require('./codegenService');
 const pushService = require('./pushService');
 const requirementsLogService = require('../documents/requirementsLogService');
-const { createLogger } = require('../logger');
+const { processLogger } = require('../logger');
 
-// pipelineRunner only ever runs inside worker.js's process (see
-// Docker-outside-of-Docker note in ROADMAP.md Phase 7), so it shares that
-// process's 'worker' log stream rather than taking a logger as a parameter.
-const logger = createLogger('worker');
+// run()/resume() are only ever *called* from worker.js's process (see
+// Docker-outside-of-Docker note in ROADMAP.md Phase 7), but this module is
+// also loaded by app.js, which requires it through routes/repos.js - so it
+// logs to whatever process name the current entrypoint declared rather than
+// hardcoding 'worker'. Hardcoding it had the app container writing
+// logs/worker.log concurrently with the worker container, which crashed the
+// app on the first daily roll (see logger.js).
 
 const WORKSPACE = '/workspace';
 const SANDBOX_NETWORK = process.env.SANDBOX_NETWORK || 'apex-net';
@@ -187,14 +190,14 @@ async function run(sessionId) {
   try {
     ({ session, branch, repo, org, requirements } = await loadContext(sessionId));
     runId = await createRun(sessionId);
-    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId });
+    log = processLogger().child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId });
     await db.query("UPDATE sessions SET status = 'running', resume_requested = FALSE WHERE id = ?", [sessionId]);
   } catch (err) {
     // Couldn't even start bookkeeping for this session - still must move it
     // out of 'queued', or worker.js's poll loop would retry the same broken
     // session forever.
     await db.query("UPDATE sessions SET status = 'failed' WHERE id = ?", [sessionId]).catch(() => {});
-    logger.error({ sessionId, err }, 'failed to start session');
+    processLogger().error({ sessionId, err }, 'failed to start session');
     return;
   }
 
@@ -263,13 +266,13 @@ async function resume(sessionId) {
       sessionId,
     ]);
     failedRun = row;
-    log = logger.child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId: failedRun ? failedRun.id : undefined });
+    log = processLogger().child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId: failedRun ? failedRun.id : undefined });
   } catch (err) {
     // Same failure mode as run()'s startup guard - a broken lookup here must
     // still move the session out of 'queued', or worker.js's poll loop would
     // retry it forever.
     await db.query("UPDATE sessions SET status = 'failed', resume_requested = FALSE WHERE id = ?", [sessionId]).catch(() => {});
-    logger.error({ sessionId, err }, 'failed to start resume for session');
+    processLogger().error({ sessionId, err }, 'failed to start resume for session');
     return;
   }
 

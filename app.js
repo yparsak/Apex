@@ -12,10 +12,10 @@ const reposRoutes = require('./app/routes/repos');
 const documentsRoutes = require('./app/routes/documents');
 const apiAdminRoutes = require('./app/routes/apiAdmin');
 const authProvider = require('./app/lib/auth/authProvider');
-const { createLogger } = require('./app/lib/logger');
+const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
-const logger = createLogger('app');
+const logger = initProcessLogger('app');
 const app = express();
 
 app.set('view engine', 'ejs');

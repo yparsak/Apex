@@ -23,6 +23,21 @@ const LEVEL = process.env.LOG_LEVEL || 'info';
 // one underlying pino instance, not create their own.
 const cache = new Map();
 
+// The per-process-name invariant above only holds within one process - the
+// cache can't dedupe across processes, and the app/worker containers both
+// bind-mount the same logs/ (see Makefile). Two *containers* opening one
+// logs/<name>.log is therefore the same race, plus a uid mismatch: `make
+// worker` runs as root while `make dev` runs as the host user, so whichever
+// container wins the daily roll leaves a file the other can't open
+// (EACCES, crashing it via the transport's unhandled 'error' event).
+//
+// So the log file name is a property of the *process*, not of the module
+// doing the logging: entrypoints declare it once via initProcessLogger(), and
+// shared library modules (pipelineRunner.js, specDocService.js - both loaded
+// by app.js's route tree as well as by their own worker entrypoint) resolve
+// it lazily through processLogger() instead of naming a file themselves.
+let processName = null;
+
 function createLogger(name) {
   if (cache.has(name)) return cache.get(name);
 
@@ -43,9 +58,44 @@ function createLogger(name) {
     ],
   });
 
+  // Without this, any failure to write the rolled file (a permission problem
+  // on a rotated file, a full disk) reaches the process as an unhandled
+  // 'error' event on pino's ThreadStream and takes the whole process down -
+  // a web server dying because it couldn't append to a log file. Report it
+  // on the original stderr (the logger itself is what's broken) and keep
+  // running; stdout logging and `docker logs` are unaffected. Reported once
+  // per transport, since a failed destination usually keeps failing.
+  let reported = false;
+  transport.on('error', (err) => {
+    if (reported) return;
+    reported = true;
+    process.stderr.write(`[logger] file transport for "${name}" failed, continuing without it: ${err.message}\n`);
+  });
+
   const logger = pino({ name, level: LEVEL }, transport);
   cache.set(name, logger);
   return logger;
 }
 
-module.exports = { createLogger, LOGS_DIR };
+// Called once by each entrypoint (app.js/worker.js/specDocWorker.js) to fix
+// the name every log file this process writes is derived from.
+function initProcessLogger(name) {
+  processName = name;
+  return createLogger(name);
+}
+
+// For shared modules: the current process's logger. Resolved at call time,
+// not at require time - a library module is required while the entrypoint's
+// own requires are still being evaluated, before initProcessLogger() runs.
+// The fallback keeps the one-file-per-process invariant for any future
+// script that forgets to initialize rather than silently joining (and
+// racing) another process's file.
+function processLogger() {
+  if (!processName) {
+    const entry = process.argv[1] ? path.basename(process.argv[1], path.extname(process.argv[1])) : 'unknown';
+    processName = entry;
+  }
+  return createLogger(processName);
+}
+
+module.exports = { initProcessLogger, processLogger, LOGS_DIR };
