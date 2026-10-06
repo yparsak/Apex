@@ -92,6 +92,11 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   `status` is `active` / `stale` / `deleted`; `deleted` is a one-way door from the UI
   (row kept for history), reached either automatically (GitHub confirms the branch is
   gone) or by explicit user delete — both converge on the same `markDeleted()` call.
+  `initials` uses a case-sensitive collation (`utf8mb4_bin`) because git refs are
+  case-sensitive: `dev/jd-…` and `dev/JD-…` are genuinely different branches on GitHub
+  and so must be able to be different rows. The rule that there's never more than one
+  *live* branch per logical slot lives in `branchService.js`, where it can consult
+  `status`, rather than in the unique key, which can't.
 
 **Sessions & the clarification loop**
 - `sessions` — one AI-pipeline attempt per branch at a time (`branch_id`, `user_id`,
@@ -156,9 +161,16 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 
 1. **Repo/branch selection.** An engineer with `user_repo_group_permissions` on a
    repo's group picks a repo, enters a CO number (validated against `^C[0-9]{8}$` —
-   shape only; Apex has no connection to the actual change-control system), and either
-   starts a new branch (`dev/{initials}-{CO}-{n}` off the repo's `default_branch_name`)
-   or continues an existing active one. Either path acquires the `pipeline_locks` row
+   shape only; Apex has no connection to the actual change-control system), and lands
+   on a CO page listing **every branch on GitHub matching
+   `dev/{initials}-{CO}-{n}` for that CO** ([branchService.js](app/lib/branchService.js)
+   `discoverCoBranches`, a live ref query — GitHub is the source of truth and nothing is
+   cached). From there they continue one Apex already tracks, *adopt* one created by
+   hand on GitHub (Apex inserts the missing row, parsing `initials`/`increment` back out
+   of the name and storing the name verbatim), or create a new branch at the next
+   increment free across **both** sources — so a hand-made `-1` yields `-2` rather than a
+   second `-1` that fails at `createBranchRef`. Names not matching that pattern are never
+   listed, adopted, or renamed. Any path acquires the `pipeline_locks` row
    for `(repo_id, co_number)` via `findOrCreateSession` + `acquireLock` — only one AI
    session can be in flight per repo+CO at a time, across all users.
 

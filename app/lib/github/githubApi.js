@@ -56,6 +56,37 @@ async function createBranchRef(owner, repo, ref, sha) {
   return res.json();
 }
 
+// listMatchingBranches(owner, repo, prefix) -> array of branch names (the
+// refs/heads/ prefix stripped) whose name starts with `prefix`. Phase 18's
+// existing-branch discovery: GitHub is the source of truth for what refs
+// exist, so this is called live per request and never cached - a stale copy
+// would reintroduce exactly the "Apex doesn't know about a hand-made branch"
+// failure the phase exists to fix.
+//
+// An empty repo (no refs at all) answers 409, and a prefix matching nothing
+// answers 200 with []; both mean "no matching branches" here.
+async function listMatchingBranches(owner, repo, prefix) {
+  const names = [];
+  for (let page = 1; ; page += 1) {
+    const res = await githubRequest(
+      'GET',
+      `/repos/${owner}/${repo}/git/matching-refs/heads/${prefix.split('/').map(encodeURIComponent).join('/')}?per_page=100&page=${page}`
+    );
+    if (res.status === 409) return names;
+    if (!res.ok) {
+      throw new Error(`GitHub listMatchingBranches ${owner}/${repo} ${prefix} failed: HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return names;
+    for (const entry of data) {
+      if (typeof entry.ref === 'string' && entry.ref.startsWith('refs/heads/')) {
+        names.push(entry.ref.slice('refs/heads/'.length));
+      }
+    }
+    if (data.length < 100) return names;
+  }
+}
+
 // getTree(owner, repo, ref) -> array of blob paths, recursive. Used for
 // Phase 5's up-front context retrieval (see notes.md / ROADMAP.md Phase 5) -
 // paths only, never bulk file contents, so it scales to large repos.
@@ -100,6 +131,7 @@ module.exports = {
   getRepo,
   listCollaborators,
   getBranch,
+  listMatchingBranches,
   createBranchRef,
   getTree,
   getFileContent,

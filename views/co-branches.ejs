@@ -1,0 +1,66 @@
+<%- include('partials/head', { title: coNumber, user: user }) %>
+  <aside class="sidebar">
+    <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
+  </aside>
+  <main class="content">
+    <p><a href="/"><%= org.name %> / <%= repoGroup.name %></a> / <a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
+    <h1>Branches for <%= coNumber %></h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+
+    <% if (discoveryError) { %>
+      <p class="error">Couldn't read the branch list from GitHub: <%= discoveryError %></p>
+      <p class="placeholder">
+        Creating a branch is unavailable until this succeeds &mdash; without GitHub's list Apex
+        can't tell which increments are already taken.
+      </p>
+      <p><a href="/repos/<%= repo.id %>/co/<%= coNumber %>">Try again</a></p>
+    <% } else { %>
+      <h2>Existing branches on GitHub</h2>
+      <% if (!entries.length) { %>
+        <p class="placeholder">No branches on GitHub match <code>dev/{initials}-<%= coNumber %>-{n}</code>.</p>
+      <% } else { %>
+        <table class="admin-table">
+          <thead><tr><th>Branch</th><th>Increment</th><th>In Apex</th><th></th></tr></thead>
+          <tbody>
+            <% entries.forEach(function(e) { %>
+            <tr>
+              <td><%= e.branchName %></td>
+              <td><%= e.increment %></td>
+              <td>
+                <% if (e.state === 'untracked') { %>Not tracked<% } else { %><%= e.state.charAt(0).toUpperCase() + e.state.slice(1) %><% } %>
+              </td>
+              <td class="row-form">
+                <% if (e.state === 'active') { %>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= e.row.id %>/continue" class="inline-form">
+                    <button type="submit" class="link-button">Continue</button>
+                  </form>
+                <% } else if (e.adoptable) { %>
+                  <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/adopt" class="inline-form">
+                    <input type="hidden" name="branch_name" value="<%= e.branchName %>">
+                    <button type="submit" class="link-button">Adopt &amp; continue</button>
+                  </form>
+                <% } else { %>
+                  <span class="placeholder"><%= e.blockedReason %></span>
+                <% } %>
+              </td>
+            </tr>
+            <% }) %>
+          </tbody>
+        </table>
+        <p class="placeholder">
+          Only names matching <code>dev/{initials}-<%= coNumber %>-{n}</code> are listed. Anything
+          else on this repo is left alone entirely &mdash; Apex neither adopts nor renames it.
+        </p>
+      <% } %>
+
+      <h2>Create new branch</h2>
+      <p>
+        Next available increment for <strong><%= user.initials %></strong>:
+        <code><%= proposedBranchName %></code>
+      </p>
+      <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/create">
+        <button type="submit">Create branch from <%= repo.default_branch_name %></button>
+      </form>
+    <% } %>
+  </main>
+<%- include('partials/foot') %>

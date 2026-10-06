@@ -1103,17 +1103,59 @@ Not in notes.md's original scope.
   increment stays scoped to the requesting user's own initials, so adopting someone
   else's `-3` doesn't push your own first branch past `-1`.
 
-Open / undecided for this phase:
-- **Where the list renders** — an intermediate "branches for this CO" page after CO
-  submission, vs. inline on the repo page (live lookup as the CO field is filled). The
-  latter is nicer but needs client-side JS, which this stack has deliberately avoided so
-  far (EJS, server-rendered; see Stack decisions) — leaning toward the intermediate page
-  for that reason, not decided.
-- **Whether a branch previously soft-deleted in Apex** (`status='deleted'`, Phase 13) but
-  still present on GitHub shows up in this list. Phase 13 was explicit that `deleted` is a
-  one-way door with no undelete path, which argues for excluding it — but that then means
-  a branch visibly existing on GitHub is silently absent from the list, which is the same
-  class of confusion this phase set out to remove. Not decided.
+Resolved while building this phase (both were open above):
+- **Where the list renders: an intermediate page**, `GET /repos/:repoId/co/:coNumber`
+  ([views/co-branches.ejs](views/co-branches.ejs)). The inline alternative would have
+  needed client-side JS, which this stack has deliberately avoided (see Stack decisions),
+  and the intermediate page gets a reloadable, bookmarkable URL out of it for free.
+- **A branch soft-deleted in Apex but still present on GitHub is shown, labelled, and
+  non-adoptable.** Excluding it would make a branch that visibly exists on GitHub silently
+  absent from the list — the same class of confusion this phase exists to remove — while
+  allowing adoption would be an undelete by another name, which Phase 13 ruled out. It
+  also still occupies its increment, so the next new branch skips past it.
+
+**Implementation notes (decisions made while building this phase):**
+- **`githubApi.listMatchingBranches(owner, repo, prefix)`** wraps
+  `GET /git/matching-refs/heads/dev/`, paginated at 100/page, strips `refs/heads/`, and
+  treats a 409 (empty repo, no refs at all) as "no matches" rather than an error.
+  Filtering to the entered CO happens application-side, since the endpoint only does
+  prefix matching.
+- **Discovery joins GitHub refs to Apex rows in JS, not in SQL.** `branch_name` is still a
+  case-insensitive column, so `WHERE branch_name = ?` would match `dev/jd-…` against
+  `dev/JD-…` and defeat the entire case-variant rule. Loading the CO's rows and matching
+  with an exact JS string compare keeps that comparison out of reach of any column or
+  connection collation. Only `initials` needed the `utf8mb4_bin` change, because it's the
+  column the unique key rejects on; nothing in the app queries `branches` by
+  `branch_name`, so that column was left alone.
+- **The "two live branches in one logical slot" rule is checked against the slot
+  (`repo + CO + case-insensitive initials + increment`), not against a specific
+  Apex-created original.** Same outcome as the narrower rule the phase describes, but it
+  also covers two hand-made case-variants where *neither* came from Apex — the roadmap
+  text above assumed one of the pair always did.
+- **`adoptBranch` takes no `user`.** The adopted row's `initials` come out of the ref name,
+  not from whoever clicked Adopt — the branch belongs to the engineer whose initials are
+  in it, which is what keeps Phase 4's per-user increment scoping honest.
+- **Both `adopt` and `create` re-run discovery server-side** rather than trusting the
+  rendered page, which is a snapshot: between render and submit the ref can vanish or its
+  slot can be taken. Forging an adopt POST for a branch the page showed as blocked is
+  refused with the same message the page displayed.
+- **A failed discovery call withholds the create button entirely** (error shown, retry
+  link offered) instead of falling back to the Apex-rows-only increment. Creating blind is
+  precisely the failure mode this phase exists to remove, so an unreachable GitHub makes
+  creation unavailable rather than unsafe.
+- **The repo-page form accepts a lowercase `c`** and the handler upper-cases before
+  redirecting, so `c00000001` lands on `/co/C00000001`. The one-CO-spelling rule
+  (`CO_NUMBER_RE`) is still enforced — on the path param too, so a hand-typed
+  `/co/GARBAGE` is a 400 rather than a GitHub call with junk in it.
+
+Still open after this phase:
+- **Initials wider than the discovery matcher.** Phase 2's admin accepts
+  `^[A-Z0-9]{1,10}$`, but the matcher is `[A-Za-z]{2,3}` as specified above, so a user
+  whose initials contain a digit or aren't 2–3 letters gets Apex-created branches that
+  discovery won't list. Nothing breaks — `getNextIncrement` still counts those branches
+  from Apex's own rows, and they remain continuable from the repo page's Branches table —
+  but they're invisible on the CO page. The real fix is narrowing the Initials admin to
+  match, which would have to deal with existing non-conforming user rows.
 
 ## Phase 19 — Large-file write safety (stop truncation-driven data loss)
 

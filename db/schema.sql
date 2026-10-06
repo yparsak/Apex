@@ -98,6 +98,18 @@ CREATE TABLE IF NOT EXISTS branches (
 -- elsewhere in this file for additive changes).
 ALTER TABLE branches MODIFY COLUMN status ENUM('active', 'stale', 'deleted') NOT NULL DEFAULT 'active';
 
+-- Phase 18: git refs are case-sensitive, so dev/jd-C00000001-1 and
+-- dev/JD-C00000001-1 are two genuinely different branches on GitHub. Under
+-- utf8mb4's default (case-insensitive) collation,
+-- uq_branches_repo_initials_co_increment collapsed those into one slot and
+-- rejected the second - for the wrong reason, and still rejecting it after the
+-- first was soft-deleted, since a deleted row keeps occupying the slot.
+-- initials therefore becomes case-sensitive at the DB level and the real rule
+-- ("never two *live* branches for one logical slot") moves into
+-- branchService.js, where it can actually consult status. Re-running this
+-- MODIFY is a no-op, same idempotent-ALTER pattern as above.
+ALTER TABLE branches MODIFY COLUMN initials VARCHAR(10) COLLATE utf8mb4_bin NOT NULL;
+
 -- ---------------------------------------------------------------------------
 -- Phase 5 / Phase 7 / Phase 8: sessions, requirements, pipeline execution
 -- ---------------------------------------------------------------------------

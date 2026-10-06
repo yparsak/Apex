@@ -33,6 +33,20 @@ implementation notes). Still open:
   `warning`, contingent on whether a hard quota is even knowable for the given provider —
   `warning` is schema-supported but nothing sets it automatically yet.
 
+## Existing-branch Discovery (Phase 18)
+
+Phase 18 is built — CO entry now lands on a discovery page (`/repos/:repoId/co/:coNumber`)
+listing matching GitHub refs, with adopt / continue / create-at-next-free-increment. Both
+of the phase's open questions were resolved while building it (intermediate page; and
+soft-deleted-but-still-on-GitHub branches are shown, labelled, non-adoptable). Still open:
+
+- **Initials wider than the discovery matcher** — Phase 2's Initials admin accepts
+  `^[A-Z0-9]{1,10}$` while the discovery matcher is `[A-Za-z]{2,3}`, so branches created
+  for a user whose initials contain a digit or aren't 2–3 letters won't appear on the CO
+  page. Nothing breaks (increments still count from Apex's own rows, and the branch stays
+  continuable from the repo page), but the two formats should converge — which means
+  deciding what to do about existing non-conforming `users` rows.
+
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 
 - **SSO** — `authProvider` interface supports it, and Phase 17 decided provider

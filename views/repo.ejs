@@ -9,12 +9,13 @@
     <% if (repo.description) { %><p><%= repo.description %></p><% } %>
     <% if (error) { %><p class="error"><%= error %></p><% } %>
     <h2>Start new branch</h2>
-    <form method="POST" action="/repos/<%= repo.id %>/branches" class="stacked-form">
+    <form method="POST" action="/repos/<%= repo.id %>/co" class="stacked-form">
       <label>CO number
-        <input type="text" name="co_number" placeholder="C12345678" pattern="C[0-9]{8}" required>
+        <input type="text" name="co_number" placeholder="C12345678" pattern="[Cc][0-9]{8}" required>
       </label>
-      <button type="submit">Create branch from <%= repo.default_branch_name %></button>
+      <button type="submit">Find branches for this CO</button>
     </form>
+    <p class="placeholder">Apex shows what already exists on GitHub for that CO before creating anything.</p>
 
     <h2>Branches</h2>
     <nav class="tabs">

@@ -123,22 +123,134 @@ router.get('/:repoId/documents', async (req, res) => {
   });
 });
 
-router.post('/:repoId/branches', async (req, res) => {
+// Phase 18: entering a CO on the repo page no longer creates a branch. It
+// validates the CO and hands off to the discovery page below, which shows
+// what already exists on GitHub for that CO before anything is created.
+// Plain POST-redirect-GET so the discovery page is reloadable/bookmarkable
+// and the CO lives in the URL.
+router.post('/:repoId/co', async (req, res) => {
   const access = await loadAccess(req, res);
   if (!access) return;
 
-  const coNumber = (req.body.co_number || '').trim();
-  let branch;
-  try {
-    branch = await branchService.createBranch({ repo: access.repo, org: access.org, coNumber, user: req.session.user });
-  } catch (err) {
-    return renderRepoPage(req, res, access, err.message);
+  const coNumber = (req.body.co_number || '').trim().toUpperCase();
+  if (!branchService.isValidCoNumber(coNumber)) {
+    return renderRepoPage(req, res, access, 'CO number must match format C12345678 (a C followed by 8 digits).');
   }
 
-  const session = await sessionService.findOrCreateSession(branch.id, req.session.user.id);
-  await lockService.acquireLock(access.repo.id, coNumber, session.id, req.session.user.id);
+  res.redirect(`/repos/${access.repo.id}/co/${coNumber}`);
+});
 
+// Opens a session on `branch` and takes the user to it - the shared tail of
+// every path off the discovery page (continue / adopt / create new).
+async function enterBranch(req, res, access, branch) {
+  const session = await sessionService.findOrCreateSession(branch.id, req.session.user.id);
+  await lockService.acquireLock(access.repo.id, branch.co_number, session.id, req.session.user.id);
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+}
+
+// Renders Phase 18's intermediate "branches for this CO" page. Discovery is a
+// live GitHub call, so it can fail (no creds, rate limit, outage); when it
+// does we show the error and deliberately offer *no* create option, because
+// without the GitHub side of the picture we can't compute an increment that's
+// safe to create - which is the exact failure this phase exists to remove.
+async function renderCoPage(req, res, access, coNumber, error) {
+  let discovery = null;
+  let discoveryError = null;
+  try {
+    discovery = await branchService.discoverCoBranches({ repo: access.repo, org: access.org, coNumber });
+  } catch (err) {
+    discoveryError = err.message;
+  }
+
+  const nextIncrement = discovery
+    ? await branchService.getNextIncrement(
+        req.session.user.initials,
+        coNumber,
+        branchService.takenIncrementsFor(discovery, req.session.user.initials)
+      )
+    : null;
+
+  res.render('co-branches', {
+    user: req.session.user,
+    repo: access.repo,
+    org: access.org,
+    repoGroup: access.repoGroup,
+    branches: await branchService.listActiveBranches(access.repo, access.org),
+    coNumber,
+    entries: discovery ? discovery.entries : [],
+    nextIncrement,
+    proposedBranchName: nextIncrement ? `dev/${req.session.user.initials}-${coNumber}-${nextIncrement}` : null,
+    discoveryError,
+    error,
+  });
+}
+
+// Validates the CO out of the path itself, so a hand-typed /co/whatever gets
+// the same single CO spelling rule as the form (CO_NUMBER_RE) rather than
+// reaching GitHub with garbage.
+function coNumberParam(req, res) {
+  const coNumber = (req.params.coNumber || '').trim();
+  if (!branchService.isValidCoNumber(coNumber)) {
+    res.status(400).send('CO number must match format C12345678 (a C followed by 8 digits).');
+    return null;
+  }
+  return coNumber;
+}
+
+router.get('/:repoId/co/:coNumber', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const coNumber = coNumberParam(req, res);
+  if (!coNumber) return;
+
+  await renderCoPage(req, res, access, coNumber, null);
+});
+
+// Adopt an existing GitHub branch Apex has no row for. branchService
+// re-discovers and re-checks adoptability rather than trusting the submitted
+// name - the page the user clicked on is a snapshot.
+router.post('/:repoId/co/:coNumber/adopt', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const coNumber = coNumberParam(req, res);
+  if (!coNumber) return;
+
+  const branchName = (req.body.branch_name || '').trim();
+  let branch;
+  try {
+    branch = await branchService.adoptBranch({ repo: access.repo, org: access.org, coNumber, branchName });
+  } catch (err) {
+    return renderCoPage(req, res, access, coNumber, err.message);
+  }
+
+  await auditLog.logAction({ userId: req.session.user.id, action: 'branch_adopted', detail: branch.branch_name });
+  await enterBranch(req, res, access, branch);
+});
+
+// Create a new branch at the next increment available across *both* sources -
+// Apex's own rows and the refs just discovered on GitHub - so a hand-made -1
+// means this one is -2, never a second -1 that fails at createBranchRef.
+router.post('/:repoId/co/:coNumber/create', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+  const coNumber = coNumberParam(req, res);
+  if (!coNumber) return;
+
+  let branch;
+  try {
+    const discovery = await branchService.discoverCoBranches({ repo: access.repo, org: access.org, coNumber });
+    branch = await branchService.createBranch({
+      repo: access.repo,
+      org: access.org,
+      coNumber,
+      user: req.session.user,
+      takenIncrements: branchService.takenIncrementsFor(discovery, req.session.user.initials),
+    });
+  } catch (err) {
+    return renderCoPage(req, res, access, coNumber, err.message);
+  }
+
+  await enterBranch(req, res, access, branch);
 });
 
 router.post('/:repoId/branches/:branchId/continue', async (req, res) => {
