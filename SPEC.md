@@ -202,8 +202,15 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
      never leaves the sandbox.
    - **Codegen** — the model turns the session's confirmed requirements into file
      writes inside the container (see
-     [apex_nim_integration.md](apex_nim_integration.md) for exactly how). The container
-     is committed to (`git commit`) while network is still open.
+     [apex_nim_integration.md](apex_nim_integration.md) for exactly how). Writes are
+     **not** unconditionally accepted: a write replaces a file's entire contents, so it
+     is accepted only for a file the model demonstrably saw in full (or one that doesn't
+     exist yet), and never from a reply the provider cut off mid-output. A write that
+     fails that test is refused back to the model as a turn it can act on. The guarantee
+     is that **no codegen run silently deletes code the model never read** — a refusal,
+     or a failed codegen stage, is the intended outcome in preference to pushing an
+     unseen deletion to the DEV branch. The container is committed to (`git commit`)
+     while network is still open.
    - **Seal** — the sandbox's network is disconnected before build/test. No
      registry egress from this point on; repos must vendor/cache all build/test
      dependencies.

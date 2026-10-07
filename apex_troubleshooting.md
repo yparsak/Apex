@@ -132,14 +132,56 @@ default specifically to avoid it. Also check that the model actually supports th
 [apex_nim_integration.md](apex_nim_integration.md#request-response-handling).
 
 **A model call fails outright with an "NVIDIA NIM returned HTTP ..." or "no usable
-content" error after what looks like a delay.**
-That delay is the retry budget — 3 attempts with exponential backoff — already having
-run and exhausted itself. Check `NVIDIA_API_KEY` and `NVIDIA_BASE_URL` are correct and
-that the NIM endpoint is reachable from wherever the call originated (`apex-app` for
-clarification/overlap, `apex-worker` for codegen, `apex-spec-doc-worker` for the
-Spec/Communication Protocol doc — each needs outbound network access at the time of the
-call; note codegen's network is only open during that stage, before build/test seals
-it).
+content" error.**
+Whether there was a delay first tells you which kind of failure it was, and the two want
+different checks:
+
+- **After a ~1.5s delay** — a network error, a 5xx, or a 408: the retry budget (3
+  attempts, exponential backoff) ran and exhausted itself. Check `NVIDIA_API_KEY` and
+  `NVIDIA_BASE_URL` are correct and that the NIM endpoint is reachable from wherever the
+  call originated (`apex-app` for clarification/overlap, `apex-worker` for codegen,
+  `apex-spec-doc-worker` for the Spec/Communication Protocol doc — each needs outbound
+  network access at the time of the call; note codegen's network is only open during that
+  stage, before build/test seals it).
+- **Immediately, with exactly one request in the logs** — a request-shaped failure
+  (a 400, 401, 403, 429). These are **not** retried as of ROADMAP.md Phase 19: nothing
+  about the request changes between attempts, so retrying only reproduces it. Read the
+  status: `401`/`403` is credentials, `429` also locks the provider (see below), and a
+  `400` reported as *"the request exceeded the model's context window"* means the prompt
+  itself was too big — most likely codegen, whose message list grows across up to 40
+  turns. Nothing to fix in the endpoint config; the work was too large.
+
+**Codegen fails with "NVIDIA NIM stopped generating at the max_tokens limit
+(MODEL_MAX_TOKENS=...)".**
+The model's reply was cut off mid-output by the output-token ceiling, so it was discarded
+rather than written — a half-finished file body would otherwise have replaced a real
+file wholesale. Codegen tells the model its reply was cut off and lets it try a smaller
+change twice before failing the stage. If the files in play legitimately need longer
+replies, raise `MODEL_MAX_TOKENS` (the default, 4096, is roughly a 400-line ceiling) and
+re-run the session. If instead the model keeps trying to rewrite one very large file,
+that file is simply out of reach until Phase 21 — see the next entry.
+
+**Codegen refuses to write a file: "Refusing to write "<path>" - you were shown only the
+first 8000 characters..." (or "...is too large to read", "...you have not fetched this
+file").**
+**This is expected behavior, not a bug.** A write replaces the file's entire contents,
+and `MAX_FILE_CHARS` caps a read at 8,000 characters — so rewriting a file the model only
+partly read would delete the rest of it, silently, and pass build/test if the deleted
+code isn't exercised by the repo's `testCommand`. Apex refuses instead (ROADMAP.md
+Phase 19). The refusal is fed back to the model, which can implement the requirements in
+files it can read in full; the codegen stage fails only if nothing is left for it to do.
+Until Phase 21 adds ranged writes, **codegen cannot edit files over 8,000 characters.**
+Do not "fix" this by raising `MAX_FILE_CHARS`: the output-token ceiling still makes a
+3,000-line whole-file rewrite impossible, and the write would then be accepted and cut
+off instead of refused. Split the change across smaller files, or make that edit by hand.
+
+**The model says a file "was not found" and offers to create it, but the file clearly
+exists on the branch.**
+If the file is over 1 MB, this was the pre-Phase-19 behavior: GitHub's contents API
+returns a different response shape above 1 MB, which Apex mapped to "not found." It now
+reports *"<path> exists but could not be read: ... over the 1 MB limit"* and refuses any
+write to it. If you still see the old message for a large file, you're running code from
+before Phase 19.
 
 **Every model call fails immediately with `"Model provider "<provider>" is locked
 (...)"`, with no delay and no NIM request in the logs at all.**
@@ -192,7 +234,7 @@ Full variable list and what each controls: see
 | `PIPELINE_POLL_INTERVAL_MS` | How often `apex-worker` checks for a new `queued` session. |
 | `PIPELINE_STEP_TIMEOUT_MS` | Per-step (build/test) timeout inside the sandbox. |
 | `LOG_RETENTION_DAYS` | How long rotated `logs/*.log` files are kept. |
-| `MODEL_MAX_TOKENS` | `max_tokens` sent on every NIM request. |
+| `MODEL_MAX_TOKENS` | `max_tokens` sent on every NIM request; defaults to 4096, roughly a 400-line output ceiling. Set too low, it doesn't shorten replies — a reply that hits the limit is **discarded entirely** and the turn fails, so codegen loses turns (and eventually the stage) on any file it can't emit within the budget. |
 
 For Docker/Podman architecture questions (why the worker needs the host socket, why
 sandbox containers aren't bind-mounted, what runs where), see

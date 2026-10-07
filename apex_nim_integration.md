@@ -47,7 +47,7 @@ string `generate()` resolved with before Phase 14.
 | `MODEL` | Model name sent to the chat-completions endpoint (e.g. `google/gemma-4-31b-it`). |
 | `NVIDIA_BASE_URL` | Base URL, e.g. `https://integrate.api.nvidia.com/v1`. |
 | `NVIDIA_API_KEY` | Bearer token. |
-| `MODEL_MAX_TOKENS` | `max_tokens` on every request. Defaults to 4096. |
+| `MODEL_MAX_TOKENS` | `max_tokens` on every request. Defaults to 4096 — about 400 lines of output, ceiling. A reply that hits this limit is **discarded**, not used (see Reliability below), so setting it too low doesn't degrade output quality, it fails turns outright. |
 
 ### Request/response handling
 
@@ -59,18 +59,36 @@ necessary for `moonshotai/kimi-k3`, which sometimes returns its answer in
 intermittent bug where it responds with a string of `!!!!` — the default model is
 currently set to `google/gemma-4-31b-it` instead.)
 
+`choices[0].finish_reason` is checked on every reply. **`finish_reason: 'length'` means
+the provider cut the reply off at `max_tokens` mid-output, and such a reply is thrown
+away, never returned** — before Phase 19 it was indistinguishable from a complete one,
+so codegen would take a file body ending mid-function and write it verbatim over the
+real file.
+
 ### Reliability
 
-Up to 3 attempts, exponential backoff (500ms, 1000ms). Two distinct failure modes share
-the same retry budget and the same final error-reporting path:
+Up to 3 attempts, exponential backoff (500ms, 1000ms) — but **only for failures that
+are plausibly transient.** Nothing about the request changes between attempts, so a
+failure caused by the request itself can only be reproduced, and it fails on the first
+attempt instead (ROADMAP.md Phase 19):
 
-- **Transport failures** — network errors, non-2xx HTTP status.
-- **Content failures** — a 2xx response where both `content` and `reasoning_content`
-  come back blank.
+| Failure | Retried? |
+|---|---|
+| Network/transport error (no HTTP response at all) | Yes |
+| HTTP 5xx, HTTP 408 | Yes |
+| **Content failure** — 2xx with both `content` and `reasoning_content` blank | Yes |
+| **Any other 4xx** — 400 context overflow, 401, 403, 429 | No — fails fast |
+| **`finish_reason: 'length'`** — reply cut off at `max_tokens` | No — fails fast |
 
-Whichever failure happened on the *final* attempt is what gets thrown — a transport
-error is never misreported as "no usable content," and vice versa. `generate()` either
-resolves with non-blank text or rejects; it never resolves with blank/null.
+Whichever failure ended the loop is what gets thrown — a transport error is never
+misreported as "no usable content," and vice versa. `generate()` either resolves with
+non-blank, non-cut-off text or rejects; it never resolves with blank/null.
+
+A `400` whose body mentions the context window is reported as *"the request exceeded the
+model's context window"* rather than a bare `HTTP 400`, and carries
+`err.contextOverflow`. Note it is **not** quota-locking: `providerHealth.js` classifies
+only `429`/`402` as tripping the breaker, so a context overflow surfaces as a
+step failure naming its real cause and leaves the provider healthy.
 
 ## The guiding rule: paths first, content on demand
 
@@ -82,8 +100,32 @@ repo awareness follows the same two-step shape:
    (`MAX_TREE_PATHS`). This is cheap (one API call) and scales to large repos.
 2. Let the **model pull individual files by path**, on demand, via a `FETCH_FILE:
    <path>` directive the model emits mid-conversation. Each fetched file is read live
-   from GitHub at the branch's current tip and truncated to **8,000 characters**
+   from GitHub at the branch's current tip and clipped to **8,000 characters**
    (`MAX_FILE_CHARS`) before being shown back to the model.
+
+**Clipping is announced, never silent** (ROADMAP.md Phase 19). A complete read is
+labelled *"complete file, N lines, N characters"*; a clipped one is labelled
+`PARTIAL contents of <path>. This is NOT the whole file.`, states the real file's line
+and character totals and the range actually shown, and tells the model that rewriting
+the file would delete what it wasn't shown. Previously the model received a bare
+`Contents of <path>:` and had no way to know it was looking at 6% of a 3,000-line file —
+which, paired with codegen's whole-file-replace protocol, silently deleted the other
+94%.
+
+Two further read outcomes are distinct rather than collapsed into "not found":
+
+- A file over **1 MB** can't be returned by GitHub's contents API. `getFileContent`
+  throws `code: 'file_too_large'` instead of mapping the response's different shape to
+  `null`, so the model is told the file *exists but is unreadable* — it used to be told
+  the file "was not found," and would then offer to create it from scratch.
+- A read that failed for any other reason is reported as a failed read, not an absent
+  file.
+
+All of this lives in one module, [app/lib/repoContext.js](app/lib/repoContext.js) —
+the caps, the tree fetch, and the formatter — shared by every call site. `MAX_TREE_PATHS`
+and `MAX_FILE_CHARS` used to be declared separately in `codegenService`,
+`clarificationService`, and `specDocService`; the write guard below is only sound if
+every reader agrees on exactly where truncation happens.
 
 The one deliberate exception is the Spec/Communication Protocol doc generator, which
 pre-selects a small fixed set of files instead of letting the model ask (see below) —
@@ -157,6 +199,29 @@ the model can now **write**, not just read.
   `..` segment, with the rejection reason sent back to the model to retry. On success,
   streamed into the container via `dockerRunner.writeFile` (stdin, not an argv string,
   so it isn't subject to shell-escaping or `ARG_MAX`) and recorded in the `written` map.
+
+  **A write is accepted only against a file the model fully saw** (ROADMAP.md Phase 19).
+  `dockerRunner.writeFile` is `cat > "$1"` — a truncating overwrite — so a whole-file
+  replace of a file the model only partly read deletes the rest of it. The four grounds
+  for accepting a write are exactly the cases where nothing unseen can be lost: the
+  model wrote the path earlier this session; it fetched the path and was shown the
+  entire file; it fetched the path and the file genuinely doesn't exist (so this creates
+  it); or it never fetched the path but the path is absent from a **complete** file tree,
+  which is equally proof the file is new. A partial read, a >1 MB file, a failed read, or
+  no read at all against a tree we know was clipped by `MAX_TREE_PATHS` are all refused —
+  as a turn fed back to the model, same shape as the unsafe-path refusal, not a pipeline
+  failure, so it can route around the file or finish without it.
+
+  The practical effect until Phase 21 provides a ranged-write alternative: **codegen
+  cannot edit a file larger than `MAX_FILE_CHARS`.** That is the intended, honest
+  behavior — failing the codegen step beats pushing a silent deletion of code the model
+  never saw. Phase 20 makes the constraint visible up front by putting per-file size in
+  the prompt tree, so the refusal is predictable rather than surprising.
+- A reply the provider **cut off at `max_tokens`** is a failed turn, not a result: the
+  truncated text is discarded without entering the transcript, and the model is told its
+  reply was cut off and nothing was written, so it can choose a smaller change. Two such
+  replies in one run (`MAX_CUT_OFF_REPLIES`) fails the codegen stage — a file too big to
+  emit in one reply can't be retried into fitting.
 - `DONE` — ends codegen. Throws (fails the pipeline at the codegen stage) if the model
   says `DONE` having written zero files, or if 40 turns pass without a `DONE`.
 
@@ -177,22 +242,28 @@ README.md, package.json, apex.pipeline.json
 ```
 
 — and includes the content of whichever of those three actually exist in the tree
-(each truncated to 8,000 chars), alongside the same capped 500-path file tree every
+(each clipped to 8,000 chars, with clipping announced the same way it is everywhere
+else — a doc written from the first 8,000 characters of a long README, presented as the
+whole thing, describes a repo that doesn't exist), alongside the same capped 500-path file tree every
 other call site uses. The model is asked to synthesize a complete Markdown document
 from that material in one shot — the whole document is regenerated from scratch every
 time, never incrementally patched, so there's no prior-document state to feed back in.
 
 ## Limits at a glance
 
-| Constant | Value | Applies to |
-|---|---|---|
-| `MAX_TREE_PATHS` | 500 | Every call site — file tree listing |
-| `MAX_FILE_CHARS` | 8,000 | Any individual fetched/pre-selected file's content |
-| `MAX_FILE_FETCHES` | 5 | Clarification — `FETCH_FILE` round-trips per message |
-| `MAX_TURNS` | 40 | Codegen — total model turns before failing the pipeline |
-| `MAX_DIFF_CHARS` | 12,000 | Overlap detection — total diff text |
-| `MAX_PATCH_CHARS_PER_FILE` | 2,000 | Overlap detection — per-file patch, before the total cap above |
-| `MAX_INSTRUCTIONS_LENGTH` | 6,000 | Admin clarification instructions — enforced at save time, not read time |
+Values are unchanged by Phase 19; what changed is where the first two are *declared*.
+This table is the only place these are written down outside code, so it names the module.
+
+| Constant | Value | Declared in | Applies to |
+|---|---|---|---|
+| `MAX_TREE_PATHS` | 500 | `app/lib/repoContext.js` | Every call site — file tree listing |
+| `MAX_FILE_CHARS` | 8,000 | `app/lib/repoContext.js` | Any individual fetched/pre-selected file's content |
+| `MAX_FILE_FETCHES` | 5 | `clarificationService.js` | Clarification — `FETCH_FILE` round-trips per message |
+| `MAX_TURNS` | 40 | `codegenService.js` | Codegen — total model turns before failing the pipeline |
+| `MAX_CUT_OFF_REPLIES` | 2 | `codegenService.js` | Codegen — `max_tokens`-cutoff replies tolerated per run |
+| `MAX_DIFF_CHARS` | 12,000 | `overlapService.js` | Overlap detection — total diff text |
+| `MAX_PATCH_CHARS_PER_FILE` | 2,000 | `overlapService.js` | Overlap detection — per-file patch, before the total cap above |
+| `MAX_INSTRUCTIONS_LENGTH` | 6,000 | `repoClarificationInstructions.js` | Admin clarification instructions — enforced at save time, not read time |
 
 All four call sites that accept admin-authored `repo_clarification_instructions` (every
 one except the Spec/Communication Protocol doc) inject it as a clearly labeled
@@ -208,7 +279,30 @@ tree — the model is told this is authoritative guidance, not repo content it a
 - **Blank reply exhausting retries** — surfaces as `"NVIDIA NIM returned no usable
   content (both content and reasoning_content were blank)"`.
 - **Transport error exhausting retries** — surfaces as `"NVIDIA NIM returned HTTP
-  <status>: <body>"`.
+  <status>: <body>"`. Only a network error, a 5xx, or a 408 actually exhausts the
+  budget; any other 4xx reports the same message after a single attempt, with no delay.
+- **Reply cut off at `max_tokens`** — surfaces as `"NVIDIA NIM stopped generating at the
+  max_tokens limit (MODEL_MAX_TOKENS=<n>, <n> output tokens) - the reply was cut off
+  mid-output and has been discarded rather than used."` Never retried (the same request
+  produces the same cutoff). In codegen the first two such replies are fed back to the
+  model as "your previous reply was cut off... nothing was written" so it can pick a
+  smaller change; the third fails the codegen stage. At every other call site it fails
+  the operation immediately. **Nothing from a cut-off reply is ever written.**
+- **Codegen refuses a write against a file it didn't fully see** — surfaces to the model
+  as `"Refusing to write "<path>" - you were shown only the first <n> characters..."`
+  (or the `too large` / failed-read / never-fetched variants). **Not a bug and not a
+  failure** — it's the Phase 19 guard working. It becomes a pipeline failure only if the
+  model then has nothing left it can legally do and ends with zero files written. The
+  fix is not to raise `MAX_FILE_CHARS` (the `max_tokens` output ceiling still makes a
+  3,000-line whole-file rewrite impossible); it's Phase 21's ranged writes.
+- **A file over 1 MB** — surfaces to the model as `"<path> exists but could not be read:
+  it is <n> characters, over the 1 MB limit of the file-contents API..."`, and any write
+  to it is refused. Before Phase 19 this was reported as "not found," and the model
+  could respond by recreating the file from scratch.
+- **Request exceeds the model's context window** — surfaces as `"NVIDIA NIM returned
+  HTTP 400 - the request exceeded the model's context window: <body>"`. Fails fast,
+  does **not** lock the provider (only 429/402 do that). Most likely in codegen, whose
+  `messages` array is append-only across up to 40 turns.
 - **Codegen exhausts 40 turns, or says `DONE` with nothing written** — fails the
   pipeline at the codegen stage with an explicit error; never silently produces a
   no-op pipeline run.

@@ -3,13 +3,11 @@
 // incrementally patched (see ROADMAP.md Phase 8). Drained by
 // specDocWorker.js, not worker.js - see specDocScanService.js for why.
 const db = require('../db');
-const githubApi = require('../github/githubApi');
 const modelAdapter = require('../model/modelAdapter');
 const usageService = require('../model/usageService');
+const repoContext = require('../repoContext');
 const { processLogger } = require('../logger');
 
-const MAX_TREE_PATHS = 500;
-const MAX_FILE_CHARS = 8000;
 const KEY_FILES = ['README.md', 'package.json', 'apex.pipeline.json'];
 
 const SYSTEM_PROMPT = [
@@ -24,25 +22,23 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 async function buildContext(org, repo, branchName) {
-  let tree = [];
-  try {
-    tree = (await githubApi.getTree(org.name, repo.name, branchName)).slice(0, MAX_TREE_PATHS);
-  } catch (err) {
-    // degrade to no tree context rather than blocking doc generation
-  }
+  const tree = await repoContext.fetchTree(org.name, repo.name, branchName);
 
+  // A key file clipped at the read cap is labelled as clipped, same as every
+  // other reader (see ROADMAP.md Phase 19) - a doc written from the first 8000
+  // characters of a long README, presented as the whole thing, describes a repo
+  // that doesn't exist. A read that fails or comes back oversized is skipped
+  // rather than blocking doc generation, which is this call site's existing
+  // degrade-don't-block posture.
   const fileBlocks = [];
   for (const path of KEY_FILES) {
-    if (!tree.includes(path)) continue;
-    try {
-      const content = await githubApi.getFileContent(org.name, repo.name, path, branchName);
-      if (content !== null) fileBlocks.push(`=== ${path} ===\n${content.slice(0, MAX_FILE_CHARS)}`);
-    } catch (err) {
-      // skip a file that failed to fetch rather than blocking doc generation
-    }
+    if (!tree.paths.includes(path)) continue;
+    const record = await repoContext.readFileForModel(org.name, repo.name, path, branchName);
+    if (record.status !== 'ok') continue;
+    fileBlocks.push(repoContext.formatFileForModel(path, record));
   }
 
-  return `=== FILE TREE ===\n${tree.length ? tree.join('\n') : '(tree unavailable)'}\n\n${fileBlocks.join('\n\n')}`;
+  return `=== FILE TREE ===\n${repoContext.renderTree(tree.paths)}\n\n${fileBlocks.join('\n\n')}`;
 }
 
 async function generateForRepo(job) {

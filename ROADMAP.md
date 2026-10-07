@@ -1251,12 +1251,70 @@ until it can no longer silently destroy what it hasn't seen.
   - **README.md** — only if the shared-constants module changes the "Project structure"
     listing.
 
+**Implementation notes (decisions made while building this phase):**
+- **The shared module is [app/lib/repoContext.js](app/lib/repoContext.js)**, and it holds
+  more than the three constants: the tree fetch, the read, the prompt formatter, and the
+  `fullyRead(record)` predicate the write guard turns on. Moving only the constants would
+  have left each call site free to format a clipped read its own way, which is how the
+  caps drifted in the first place. All three readers now call one `readFileForModel` that
+  returns a *record* — `{ status, truncated, shownLines, totalLines, … }` — instead of a
+  bare string, so "how much of this file did the model actually see" is answerable at
+  write time rather than inferred.
+- **`fetchTree` returns `{ paths, complete }`, not just paths.** `complete` is what makes
+  "absent from the tree" usable as proof a path is new: against a tree clipped by
+  `MAX_TREE_PATHS` (or an empty one from a failed fetch) that inference is invalid, so a
+  write to a never-fetched path is refused there and allowed against a complete tree.
+  This is the one place the guard needs tree *fidelity* rather than tree *content*.
+- **Four grounds for accepting a write**, rather than the two the phase text implies
+  (own prior write, full read): a read that came back `missing` also permits the write —
+  the model is creating a file, and refusing that would block new files entirely — as
+  does a never-fetched path absent from a complete tree, which is the common case for
+  every new file the model adds and would otherwise cost a wasted `FETCH_FILE` turn each.
+- **A `max_tokens` cutoff is a failed *turn* in codegen, not an immediate failed *step*.**
+  The adapter rejects (nothing truncated is ever returned or written, and the reply never
+  enters the transcript), but codegen catches `err.finishReason === 'length'` and feeds
+  back "your reply was cut off, nothing was written, pick a smaller change" so the model
+  can route around one oversized file. `MAX_CUT_OFF_REPLIES = 2` bounds it — a file too
+  big to emit can't be retried into fitting — after which the stage fails with the
+  adapter's own accurate message. Every other call site just propagates the rejection.
+- **A re-fetch of this session's own write is echoed back in full, not clipped.** It used
+  to pass through the same 8,000-char slice, which meant the model could be handed a
+  clipped copy of its *own* file and then rewrite it from that — manufacturing exactly
+  the data loss this phase prevents, with no upstream file involved. Bounded by
+  `MODEL_MAX_TOKENS` anyway, since the model authored it in one reply.
+- **Retry branches on `isRetryable(err)`**: no `httpStatus` (network error) or 5xx/408
+  retries; every other 4xx and any `length` cutoff fails on the first attempt. The
+  blank-content failure keeps its old behavior by construction — the synthesized error
+  carries no `httpStatus`, so it reads as transient, which it genuinely is.
+- **A 400 naming the context window is labelled, not just passed through.** It carries
+  `err.contextOverflow` and says *"the request exceeded the model's context window"*
+  ahead of the body. Deliberately **not** added to `providerHealth`'s quota classifier:
+  it says nothing about remaining quota, and locking the provider over one oversized
+  codegen prompt would take down clarification for every other repo.
+- **`getFileContent` detects >1 MB via `encoding === 'none'`** (with `!content && size > 0`
+  as a belt-and-braces second condition) and throws `code: 'file_too_large'` carrying
+  `fileBytes`. 404 still returns `null`, so "absent" and "too big to read" are finally
+  distinct. `pipelineConfig.fetchPipelineConfig` inherits this for free: a >1 MB
+  `apex.pipeline.json` now fails with the real reason instead of "has no
+  apex.pipeline.json".
+- **specDocService skips a non-`ok` read rather than describing the failure to the model**,
+  keeping that call site's existing degrade-don't-block posture — it has no turn loop to
+  act on a refusal, and a doc is lower stakes than a write. A *clipped* key file is still
+  included, labelled as clipped.
+- **Verified by harness, not by unit tests** (the repo has no test runner): nine codegen
+  guard scenarios against a stubbed GitHub/model/docker — partial read refused, unfetched
+  existing file refused, new file allowed, >1 MB refused, own-write re-write allowed,
+  cutoff recovered then fatal — and seven adapter scenarios against a real local HTTP
+  server asserting attempt *counts* per failure class. All passed.
+
 Open / undecided for this phase:
-- **Whether a tree-fetch failure should still proceed.** `codegenService.fetchTree`
-  swallows every error and returns `[]`, so a GitHub blip silently runs codegen with
-  `(tree unavailable)` — zero repo structure — and it still writes files. Arguably the
-  same class of defect as the above and arguably belongs here, but it's a behavior change
-  to the step's failure semantics (Phase 7), not a truncation bug. Not decided.
+- **Whether a tree-fetch failure should still proceed.** Unchanged and still undecided —
+  `repoContext.fetchTree` still swallows every error and returns an empty path list, so a
+  GitHub blip runs codegen with `(tree unavailable)`. Phase 19 narrows the blast radius
+  without resolving the question: an empty tree is now `complete: false`, so every write
+  to a file the model hasn't fetched is refused, and codegen with no tree can only write
+  files it has explicitly read first. Still a behavior change to Phase 7's failure
+  semantics to go further.
 
 ## Phase 20 — Size-aware repo file map
 

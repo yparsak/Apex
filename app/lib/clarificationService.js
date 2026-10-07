@@ -7,16 +7,14 @@
 // fully clarified, it emits FINALIZE_REQUIREMENT, which triggers overlap
 // detection and writes a session_requirements row.
 const db = require('./db');
-const githubApi = require('./github/githubApi');
 const modelAdapter = require('./model/modelAdapter');
 const usageService = require('./model/usageService');
 const overlapService = require('./overlapService');
 const auditLog = require('./auditLog');
 const repoClarificationInstructions = require('./repoClarificationInstructions');
+const repoContext = require('./repoContext');
 
 const MAX_FILE_FETCHES = 5;
-const MAX_TREE_PATHS = 500;
-const MAX_FILE_CHARS = 8000;
 
 const SYSTEM_PROMPT = [
   "You are Apex's clarification assistant. An engineer is about to implement a Change",
@@ -39,22 +37,13 @@ const SYSTEM_PROMPT = [
   'when those are unclear. Do not finalize prematurely.',
 ].join('\n');
 
-async function fetchRepoTree(org, repo, branch) {
-  try {
-    const paths = await githubApi.getTree(org.name, repo.name, branch.branch_name);
-    return paths.slice(0, MAX_TREE_PATHS);
-  } catch (err) {
-    return []; // degrade to no tree context rather than blocking the clarification loop
-  }
-}
-
 async function getConversation(sessionId) {
   const [rows] = await db.query('SELECT * FROM conversations WHERE session_id = ? ORDER BY id ASC', [sessionId]);
   return rows;
 }
 
 function toModelMessages(tree, conversation, instructions) {
-  const treeBlock = tree.length ? tree.join('\n') : '(tree unavailable)';
+  const treeBlock = repoContext.renderTree(tree);
   // Admin-authored guidance is a separate block from the file tree/FETCH_FILE
   // path - it's authoritative instruction, not repo content the model asked
   // for (see ROADMAP.md Phase 6).
@@ -90,19 +79,16 @@ async function runModelLoop(messages, org, repo, branch, session) {
     const fetchMatch = reply.match(/^FETCH_FILE:\s*(.+)$/);
     if (fetchMatch) {
       const path = fetchMatch[1].trim();
-      let content;
-      try {
-        content = await githubApi.getFileContent(org.name, repo.name, path, branch.branch_name);
-      } catch (err) {
-        content = null;
-      }
+      // Truncation is announced here exactly as it is in codegen (see
+      // ROADMAP.md Phase 19): this loop carried its own duplicate copy of the
+      // same 8000-char cap and the same unmarked slice, so a clipped file read
+      // as complete here too - and a requirement clarified against 6% of a
+      // file is clarified against the wrong file.
+      const record = await repoContext.readFileForModel(org.name, repo.name, path, branch.branch_name);
       scratch.push({ role: 'assistant', content: reply });
       scratch.push({
         role: 'user',
-        content:
-          content === null
-            ? `${path} was not found in this repo at ${branch.branch_name}.`
-            : `Contents of ${path}:\n\`\`\`\n${content.slice(0, MAX_FILE_CHARS)}\n\`\`\``,
+        content: repoContext.formatFileForModel(path, record, { ref: branch.branch_name }),
       });
       continue;
     }
@@ -167,11 +153,11 @@ async function submitMessage({ session, branch, org, repo, user, text }) {
   await auditLog.logAction({ sessionId: session.id, userId: user.id, action: 'clarification_message', detail: text });
 
   const [tree, conversation, instructions] = await Promise.all([
-    fetchRepoTree(org, repo, branch),
+    repoContext.fetchTree(org.name, repo.name, branch.branch_name),
     getConversation(session.id),
     repoClarificationInstructions.getInstructions(repo.id),
   ]);
-  const messages = toModelMessages(tree, conversation, instructions);
+  const messages = toModelMessages(tree.paths, conversation, instructions);
 
   const result = await runModelLoop(messages, org, repo, branch, session);
 

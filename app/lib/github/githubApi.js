@@ -102,6 +102,14 @@ async function getTree(owner, repo, ref) {
 // getFileContent(owner, repo, path, ref) -> decoded file text, or null if the
 // path doesn't exist at ref. Fetched on demand, one path at a time, per the
 // LLM's own FETCH_FILE requests (see clarificationService.js).
+//
+// A file over 1 MB is NOT returned as null (see ROADMAP.md Phase 19): the
+// contents API answers with the same `type: 'file'` shape but an empty
+// `content` and `encoding: 'none'`, and mapping that to null told the model the
+// file "was not found" - so it would cheerfully offer to create a large
+// existing file from scratch. It throws with code 'file_too_large' instead, so
+// the real reason reaches the model and the write is refused rather than
+// applied. Genuinely absent (404) is still null; the two are now distinct.
 async function getFileContent(owner, repo, path, ref) {
   const res = await githubRequest(
     'GET',
@@ -111,6 +119,14 @@ async function getFileContent(owner, repo, path, ref) {
   if (!res.ok) throw new Error(`GitHub getFileContent ${owner}/${repo}/${path}@${ref} failed: HTTP ${res.status}`);
   const data = await res.json();
   if (Array.isArray(data) || data.type !== 'file') return null; // path is a directory, not a file
+  if (data.encoding === 'none' || (!data.content && data.size > 0)) {
+    const err = new Error(
+      `GitHub getFileContent ${owner}/${repo}/${path}@${ref}: file is ${data.size} bytes, over the contents API's 1 MB body limit - contents not returned.`
+    );
+    err.code = 'file_too_large';
+    err.fileBytes = data.size || null;
+    throw err;
+  }
   return Buffer.from(data.content, data.encoding || 'base64').toString('utf8');
 }
 

@@ -47,6 +47,25 @@ soft-deleted-but-still-on-GitHub branches are shown, labelled, non-adoptable). S
   continuable from the repo page), but the two formats should converge — which means
   deciding what to do about existing non-conforming `users` rows.
 
+## Large-file Write Safety (Phase 19)
+
+Phase 19 is built — truncation is announced to the model, `finish_reason: 'length'` is
+treated as a failed turn, a whole-file write against anything less than a full read is
+refused, and the shared caps moved into `app/lib/repoContext.js`. Still open:
+
+- **Whether a tree-fetch failure should still proceed.** `repoContext.fetchTree` swallows
+  every error and returns an empty path list, so a GitHub blip runs codegen with
+  `(tree unavailable)` — no repo structure at all — and codegen still runs. Phase 19
+  reduced the consequences rather than deciding the question: an empty tree is marked
+  incomplete, so writes to files the model hasn't explicitly fetched are all refused.
+  Going further means changing Phase 7's failure semantics for the step, which wasn't in
+  this phase's scope.
+- **Codegen cannot edit a file over `MAX_FILE_CHARS` (8,000) at all** until Phase 21
+  replaces whole-file-replace with ranged writes. This is intended, not a defect — the
+  alternative is silent deletion — but it is a real capability gap, and Phase 20's
+  size-annotated file tree is what makes it visible to the model up front instead of a
+  surprise mid-run.
+
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 
 - **SSO** — `authProvider` interface supports it, and Phase 17 decided provider
