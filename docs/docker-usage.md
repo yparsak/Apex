@@ -53,10 +53,34 @@ Lifecycle, orchestrated by
   GitHub), then `docker network disconnect` seals it before build/test run — so a
   repo's build/test commands have no registry egress (npm/PyPI/Maven/etc.) once
   sealed. Repos must vendor/cache all dependencies up front for this reason.
-- **Writes, build, and test** all happen via `docker exec` into the container; nothing
-  is bind-mounted from the host for the sandboxed code itself. File writes are
+- **Reads, writes, build, and test** all happen via `docker exec` into the container;
+  nothing is bind-mounted from the host for the sandboxed code itself. File writes are
   streamed over stdin (`sh -c 'mkdir -p ... && cat > ...'`) rather than embedded in an
   argv string, avoiding shell-escaping and `ARG_MAX` issues.
+
+  *Reads* are new in Phase 21, and they reverse something this document previously
+  implied: the container used to be write-only to codegen, with every read served from
+  GitHub. It now serves every codegen read — whole files, line ranges, and the file list
+  the structural index is built from. The read path (`dockerRunner.readFile`) emits the
+  file's byte size on its own line *before* any content, because `dockerRunner` clips
+  stdout at 5 MB silently and a size inferred from a clipped read is how a ranged write
+  ends up splicing into a file it only half has.
+- **An index-building pass runs at the start of codegen**, which is the one new thing an
+  operator will notice in a pipeline run's logs. It is a single `exec` — `git ls-files`
+  piped into an `awk` script staged at `/tmp/apex-outline.awk` — producing exact line
+  counts and a per-file declaration outline from the clone that is already there.
+  Expect either `structural index built` (with a file count) or `structural index
+  unavailable - codegen continues without outlines` (with a reason) in the worker log,
+  once per codegen stage.
+
+  **What this expects of the sandbox image:** only POSIX `sh`, `awk`, and `git`. `git`
+  is already a hard requirement — the clone step runs inside this same image — so in
+  practice the new demand is `awk`, which every mainstream base image including Alpine's
+  busybox provides. Verified to produce identical output under busybox awk, mawk, and
+  gawk. The pass deliberately avoids `{n,m}` regex intervals and bracket-escaped
+  brackets for exactly that reason. **An image without `awk` does not fail the
+  pipeline** — the index is a navigation aid, the build logs a warning, and codegen
+  continues.
 - **Push happens via the host, not the container**: after tests pass, the container's
   already-committed working tree is pulled out with `docker cp` into a host temp dir,
   and the *host* process pushes it with plain `git`. The write-capable GitHub push

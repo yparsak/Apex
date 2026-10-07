@@ -214,18 +214,38 @@ function emptyMap() {
 // afterwards. The trailer states what is missing from the listing and
 // explicitly says those files still exist - without it, an absent path reads
 // as a file the model is free to create from scratch.
-function renderMap(map, { readLimitChars } = {}) {
+// `exactLinesFor` (Phase 21) is an optional `path -> number|null` lookup into
+// the structural index. Where it answers, the `~` estimate is replaced by the
+// count the container actually measured, per file rather than all-or-nothing:
+// a repo whose index was built before a file was added renders that one file
+// as an estimate and the rest exactly, which is the honest rendering and
+// costs nothing to support.
+function renderMap(map, { readLimitChars, exactLinesFor } = {}) {
   if (!map || map.entries.length === 0) return '(tree unavailable)';
 
-  const header =
+  const scope =
     map.omittedCount || map.excludedCount
-      ? `${formatCount(map.entries.length)} of ${formatCount(map.totalFiles)} files, most relevant first. Sizes are exact; line counts are estimates.`
-      : `All ${formatCount(map.totalFiles)} files. Sizes are exact; line counts are estimates.`;
+      ? `${formatCount(map.entries.length)} of ${formatCount(map.totalFiles)} files, most relevant first.`
+      : `All ${formatCount(map.totalFiles)} files.`;
 
-  const lines = map.entries.map((entry) => {
-    const over = readLimitChars && entry.bytes > readLimitChars ? '  [too large to read in full or rewrite]' : '';
-    return `${entry.path} - ${formatBytes(entry.bytes)}, ~${formatCount(approxLines(entry.bytes))} lines${over}`;
-  });
+  const lines = [];
+  let anyEstimated = false;
+  for (const entry of map.entries) {
+    const exact = exactLinesFor ? exactLinesFor(entry.path) : null;
+    if (exact === null || exact === undefined) anyEstimated = true;
+    const lineText = exact === null || exact === undefined ? `~${formatCount(approxLines(entry.bytes))}` : formatCount(exact);
+    // The read-limit marker keys on bytes, not lines, because MAX_FILE_CHARS
+    // is a character cap - and bytes are exact whether or not an index exists.
+    // What the marker means has narrowed since Phase 20: such a file still
+    // cannot be read whole or rewritten whole, but it can now be read and
+    // edited by range, so the text says so rather than writing the file off.
+    const over = readLimitChars && entry.bytes > readLimitChars ? '  [too large to read whole - use ranges]' : '';
+    lines.push(`${entry.path} - ${formatBytes(entry.bytes)}, ${lineText} lines${over}`);
+  }
+
+  const header = `${scope} Sizes are exact; line counts are ${
+    exactLinesFor ? (anyEstimated ? 'exact except where marked "~"' : 'exact') : 'estimates'
+  }.`;
 
   const trailer = [];
   if (map.excludedCount) {

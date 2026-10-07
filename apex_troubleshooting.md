@@ -158,29 +158,86 @@ rather than written — a half-finished file body would otherwise have replaced 
 file wholesale. Codegen tells the model its reply was cut off and lets it try a smaller
 change twice before failing the stage. If the files in play legitimately need longer
 replies, raise `MODEL_MAX_TOKENS` (the default, 4096, is roughly a 400-line ceiling) and
-re-run the session. If instead the model keeps trying to rewrite one very large file,
-that file is simply out of reach until Phase 21 — see the next entry.
+re-run the session. If instead the model keeps trying to rewrite one very large file
+whole, the fix since Phase 21 is `REPLACE_LINES` — see the next entry for why it isn't
+reaching for it.
 
 **Codegen refuses to write a file: "Refusing to write "<path>" - you were shown only the
-first 8000 characters..." (or "...is too large to read", "...you have not fetched this
+first 8000 characters..." (or "...is too large to read", "...you have not read this
 file").**
-**This is expected behavior, not a bug.** A write replaces the file's entire contents,
-and `MAX_FILE_CHARS` caps a read at 8,000 characters — so rewriting a file the model only
+**This is expected behavior, not a bug.** A whole-file write replaces everything, and
+`MAX_FILE_CHARS` caps a read at 8,000 characters — so rewriting a file the model only
 partly read would delete the rest of it, silently, and pass build/test if the deleted
 code isn't exercised by the repo's `testCommand`. Apex refuses instead (ROADMAP.md
-Phase 19). The refusal is fed back to the model, which can implement the requirements in
-files it can read in full; the codegen stage fails only if nothing is left for it to do.
-Until Phase 21 adds ranged writes, **codegen cannot edit files over 8,000 characters.**
-Do not "fix" this by raising `MAX_FILE_CHARS`: the output-token ceiling still makes a
-3,000-line whole-file rewrite impossible, and the write would then be accepted and cut
-off instead of refused. Split the change across smaller files, or make that edit by hand.
+Phase 19).
 
-Since Phase 20 the prompt's file tree marks every such file `[too large to read in full
-or rewrite]` with its size, so the model should be steering around them rather than
-discovering the limit mid-run. If you are seeing this refusal *often*, check that the
-tree block in the prompt is actually rendering sizes — a `(tree unavailable)` block means
-the map fetch failed and the model is working blind (see "The model behaves as though
-files don't exist").
+**Since Phase 21 this refusal is not a dead end**, and that changes the diagnosis. The
+refusal text now points the model at `REPLACE_LINES`, which edits a file of any size by
+naming a line range and restating the text it expects to find there. So a *single*
+refusal followed by a ranged edit is the system working as designed. What warrants
+investigation is the model never taking that route:
+
+1. Check the codegen transcript for a `FETCH_OUTLINE` or `FETCH_RANGE` turn after the
+   refusal. If there is none, the model ignored the suggestion — usually a prompt or
+   model-capability issue, not an Apex one.
+2. If `FETCH_OUTLINE` came back "no outline is available", the structural index didn't
+   build — see "Codegen runs without outlines" below. Ranged reads still work without
+   it, but the model has lost its cheapest way to find *where* to look.
+3. Only if the file is over `MAX_CONTAINER_FILE_BYTES` (2 MB) is it genuinely out of
+   reach, and the refusal says so explicitly.
+
+Do not "fix" this by raising `MAX_FILE_CHARS`: the output-token ceiling still makes a
+3,000-line whole-file rewrite impossible, so the write would be accepted and then cut
+off instead of refused.
+
+The prompt's file tree marks every such file `[too large to read whole - use ranges]`
+with its size, so the model should be steering around them rather than discovering the
+limit mid-run. If you are seeing this refusal *often*, check that the tree block is
+actually rendering sizes — a `(tree unavailable)` block means the map fetch failed and
+the model is working blind (see "The model behaves as though files don't exist").
+
+**Codegen loops on "Refusing REPLACE_LINES on <path> - the EXPECTED text does not match
+what is actually on lines N-M", eventually failing with "did not finish within 40
+turns".**
+A single mismatch is the verification working, and it is designed to self-correct: the
+refusal quotes the file's real contents for those lines, so the next attempt has the
+truth in front of it. A *loop* means something systematic. In order of likelihood:
+
+1. **The model is including the line-number prefixes** Apex adds when displaying a
+   range (`1200\tconst x = ...`). Those are display only and are not in the file. Both
+   the range display and the refusal say so; some models still do it.
+2. **It is editing one file top-down.** Each applied edit shifts every line after it, so
+   the second edit's line numbers are stale. Every applied-write reply states the new
+   file length and says to work bottom-up.
+3. **Leading whitespace differs.** Trailing whitespace in `EXPECTED` is tolerated;
+   leading whitespace is not, because indentation is semantic in Python, YAML and Make.
+   A de-indented anchor refuses, correctly.
+4. **The file is being changed underneath the model** — only possible if something other
+   than codegen is writing into the container, which shouldn't happen.
+
+Nothing is written on a refusal, so a loop wastes turns but cannot corrupt the tree. The
+session is safe to retry.
+
+**Codegen runs without outlines: worker log shows "structural index unavailable -
+codegen continues without outlines".**
+**Not a pipeline failure** — it is logged at `warn` and the run continues. The
+consequences are bounded: the prompt's file tree falls back to Phase 20's `~` byte-
+derived line estimates, and `FETCH_OUTLINE` answers "no outline is available". Ranged
+reads and anchored writes are unaffected, because both read and verify against the
+container's actual bytes rather than the index.
+
+The log line carries a reason. The likely ones:
+
+- **No `awk` in the sandbox image.** The extractor assumes only POSIX `sh`, `awk` and
+  `git`, but a sufficiently stripped image may lack `awk`. Add it to the repo's image.
+- **Timeout.** `APEX_INDEX_TIMEOUT_MS` (default 120,000) expired — a very large repo, or
+  one pathological file that slipped past the exclusion rules.
+- **`git ls-files` failed**, which means the clone step left the workspace in a bad
+  state; the codegen stage will usually be failing for that reason anyway.
+
+An index is also simply absent for any commit no codegen run has ever processed — that
+is by design, not a fault (see SPEC.md's `repo_file_maps` entry). It is why
+clarification often reports no outline on a repo that has never completed a pipeline run.
 
 **The model says a file "was not found" and offers to create it, but the file clearly
 exists on the branch.**
@@ -250,9 +307,16 @@ exists. All of these trace to the repo file map (ROADMAP.md Phase 20,
    Codegen still runs in this state, but can only write files it explicitly fetched
    first.
 4. **A refusal naming a file as too large is expected behavior**, not a map problem —
-   see "Codegen refuses to write a large file". The map is what makes that refusal
-   visible up front rather than a surprise mid-run.
-5. **A map row is never stale for a given commit** — `repo_file_maps` is keyed by
+   see the codegen refusal entry above. The map is what makes that refusal visible up
+   front rather than a surprise mid-run, and since Phase 21 it is a detour rather than
+   a dead end.
+5. **In codegen specifically, the map is not what reads are served from.** Since Phase
+   21 every codegen read comes from the sandbox container's working tree, so "the model
+   says the file isn't there" during codegen is a question about the *clone*, not about
+   `repo_file_maps`. Check the clone step succeeded and that the path is tracked by git
+   — an untracked or gitignored file is on disk and readable but absent from the index.
+   Clarification and the Spec doc still read from GitHub.
+6. **A map row is never stale for a given commit** — `repo_file_maps` is keyed by
    `(repo_id, commit_sha)`, so a moved branch misses the cache rather than serving an old
    answer. If you suspect the cache anyway, deleting that repo's rows is safe: the next
    call rebuilds from GitHub.

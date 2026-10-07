@@ -1512,17 +1512,114 @@ this phase deepens). This is the phase that actually makes large files editable.
   - **README.md** — "How it works, in short" currently implies whole-file rewrites; worth
     a sentence, plus "Project structure".
 
+**Implementation notes (decisions made while building this phase):**
+- **Codegen now reads from the container, and that is the phase's load-bearing
+  decision.** The plan said the container would build the index and serve ranged reads;
+  in practice it had to serve *every* read. Three reasons, in increasing order of
+  importance: the clone was already there and unread while the GitHub path cost an API
+  call per fetch; the in-memory overlay that made the model's own writes re-readable
+  disappears rather than needing handling; and — decisively — **line numbers**. A range
+  read from GitHub paired with an anchored write into the container drifts apart the
+  moment the model makes one edit. There is no safe version of that, so there is one
+  source. Clarification and the Spec doc still read from GitHub, correctly: neither
+  writes, so neither can have a line number go stale underneath it.
+- **The anchor is the whole protocol.** `REPLACE_LINES` names a span *and* restates the
+  text it expects there; a mismatch refuses and quotes the file's real contents back, so
+  the next attempt self-corrects instead of looping. This is the specific thing that
+  makes it not "send a unified diff and `git apply` it" — a patch tool fuzzing an offset
+  to make a hunk fit is the one failure mode a system that pushes to a real branch
+  cannot have. The anchor also *is* the read evidence, which is why a ranged write needs
+  no prior-read bookkeeping: it cannot touch a line it didn't reproduce.
+- **Trailing whitespace in an anchor is tolerated; leading whitespace is not.** The
+  asymmetry is deliberate. Indentation is semantic in Python, YAML and Make, so a
+  mismatch there is a genuine disagreement about the file. Trailing whitespace is
+  semantic nowhere and is exactly what a model drops when restating a line — treating it
+  as a mismatch is how you manufacture the anchor-mismatch loop. Safe because the anchor
+  is only ever evidence: what gets written is the replacement, never the anchor.
+- **Writes are spliced host-side**, by reading the whole file out of the container,
+  editing in Node, and writing it back through the existing `writeFile`. Reading a whole
+  file to change 20 lines looks wasteful and isn't: the cost this phase removes is
+  *model output tokens*, not bytes over a local pipe. It also means verification and
+  write see one identical copy, with no in-container editing tool to get an offset wrong.
+- **One line model, in `repoContext`, and finding that it was two was a real bug.**
+  Phase 19's `countLines` was `split('\n').length`, which counts a file's terminating
+  newline as an extra empty line — a 231-line file reported as 232. Harmless as prose in
+  a truncation warning; an off-by-one against the container's own count the moment
+  ranges exist. `splitLines`/`joinLines`/`countLines` now live beside the caps, and
+  `rangedWrite` imports them rather than defining its own, for the same reason Phase 19
+  centralized truncation: two components that each define "line N" will eventually edit
+  the wrong line.
+- **Two incidental defects fixed because this phase made them dangerous.** Both predate
+  it and neither was in the plan:
+  - `dockerRunner` decoded each stdout chunk with `chunk.toString('utf8')`, which
+    mangles any multibyte character straddling a chunk boundary — intermittent, since
+    the boundary falls wherever the pipe decides. Survivable for build logs a human
+    reads; not for file contents that get spliced and committed. Now a `StringDecoder`.
+  - Codegen `trim()`ed the whole reply before extracting a `WRITE_FILE` payload, so
+    every file it ever wrote whole landed with `\ No newline at end of file`. Invisible
+    until ranged writes started carefully preserving trailing newlines, at which point
+    the two verbs disagreed about the same file depending on which touched it last.
+- **A ranged read deliberately does not count as having read the file.** Seeing 200
+  lines is not seeing the file; letting a range license a whole-file write would hand
+  the Phase 19 guard exactly the false positive it exists to prevent. By the same logic
+  a ranged *write* doesn't license one either, and it drops whatever read record existed
+  for that path, since every line after the edit has moved.
+- **Binary detection checks for U+FFFD, not just NUL.** Container reads are decoded as
+  UTF-8, so a latin-1-encoded source file arrives with replacement characters already
+  substituted. Reading it is harmless; read-modify-writing it would commit mojibake over
+  every non-ASCII character in a file the model never meant to touch.
+- **The outline is a regex `awk` pass, as the open question leaned**, assuming only
+  POSIX `sh`/`awk`/`git` — the sandbox image is the *user's* image and Phase 7 keeps it
+  minimal, so Apex doesn't get to assume a toolchain. The first cut matched declaration
+  keywords against raw lines with a tolerant leading-whitespace prefix and was unusable:
+  every nested `const` and every `if (...) {` became an entry, 200 hits burying the 12
+  that mattered. The shipped version measures indentation separately, rejects control
+  flow and imports outright, and allows only members/methods when indented. On this repo
+  that is 386 entries across 102 files instead of 1,100-plus.
+- **Index failure is never a pipeline failure.** The tree falls back to Phase 20's
+  estimates and `FETCH_OUTLINE` says so; ranged reads and anchored writes are unaffected
+  because both go straight to the container. Nothing's correctness rests on the index —
+  a wrong outline costs a wasted read, never a wrong write, which is what licenses the
+  cheap extractor in the first place.
+- **The index is saved only if the container's `HEAD` matches the sha it would be keyed
+  under.** Those are two lookups a moment apart; a push landing between them would store
+  this commit's outline under that commit's key. The run itself wouldn't notice — it
+  reads the container — but a later clarification would be handed line numbers for a
+  tree it isn't looking at.
+- **Phase 20's "absent from a complete tree proves the file is new" ground was kept.**
+  It was tempting to drop it now that a container read answers the question definitively,
+  but it is still sound (the tree is a snapshot of exactly what the container was cloned
+  from, and the only paths that can have appeared since are this session's own, caught
+  earlier in the guard) and it still saves a turn per new file.
+- **Verified by execution, unlike Phase 20.** 52 checks across two harnesses, all green:
+  the pure logic (line-model round-trips over eight edge cases, directive parsing,
+  splicing, range extraction, `renderMap` with and without an index); the awk pass over
+  this repo under busybox awk, mawk and gawk, producing byte-identical output; the
+  container read shell against a real container across six cases (plain file, empty,
+  missing, directory, over-cap, binary); the exact `buildIndex` exec invocation against
+  a real cloned repo in a container; and the whole codegen loop with a stubbed model and
+  an in-memory container across ten scenarios — including that the Phase 19 guard still
+  refuses after a ranged read, that an anchor mismatch writes nothing and recovers, and
+  that path traversal is refused on all four verbs. Three of those checks caught real
+  bugs (the line-model off-by-one and both incidental defects above).
+
 Open / undecided for this phase:
-- **How the outline is extracted.** A language-agnostic regex/indent pass is cheap,
-  dependency-free, and wrong at the margins; real per-language parsing is accurate and
-  drags a toolchain into the sandbox image (which Phase 7 keeps per-repo and minimal).
-  Leaning toward the cheap pass first, with the outline treated as navigation hints the
-  model can be wrong about, not as ground truth. Not decided.
-- **Whether `overlapService` should read this index.** It currently works from
-  `compareCommits` patches under its own caps (`MAX_DIFF_CHARS`,
+- ~~**How the outline is extracted.**~~ Shipped as the cheap language-agnostic regex
+  pass, treated as navigation hints rather than ground truth.
+- **Whether `overlapService` should read this index.** Unchanged, as planned. It still
+  works from `compareCommits` patches under its own caps (`MAX_DIFF_CHARS`,
   `MAX_PATCH_CHARS_PER_FILE`), and overlap on a 3000-line file is exactly where
-  line-range data would sharpen the judgment. Out of scope here, but it's the most
-  obvious second consumer.
+  line-range data would sharpen the judgment. Still the most obvious second consumer.
+- **No real session has run end to end.** The harnesses stub the model and the
+  container; real NIM replies, a real clone and a real push have not been exercised
+  against this code.
+- **Clarification's outline availability varies with pipeline history**, since it can
+  only read an index some earlier codegen run left for the same commit. Accepted, but
+  it is an odd coupling — clarification quality on a repo depends on whether anyone has
+  run a pipeline against that exact commit.
+- **`MAX_ANCHOR_LINES = 300` / `MAX_RANGE_LINES = 400` are judgment calls**, not
+  measured. Comfortably larger than a single edit needs, comfortably smaller than
+  restating a file — the property that matters — but nothing has pushed on them yet.
 
 ## Open / future (not scheduled)
 

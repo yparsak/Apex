@@ -109,7 +109,12 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   `confirmed_proceed` / `confirmed_skip`. Only `confirmed_proceed` rows are ever sent to
   codegen or counted as "already implemented" by future overlap checks.
 - `conversations` — the raw clarification chat transcript (`user`/`assistant` turns).
-  Mid-turn `FETCH_FILE` round-trips are resolved inline and never stored here.
+  Mid-turn file round-trips — `FETCH_FILE`, and since Phase 21 also `FETCH_RANGE` and
+  `FETCH_OUTLINE` — are resolved inline against a scratch copy of the message list and
+  never stored here. Only the question or the finalized requirement the model arrives at
+  is persisted. Worth being explicit about, because it means **the transcript is not a
+  record of what the model read**: reconstructing that needs the model-call logs, not
+  this table.
 
 **Pipeline execution**
 - `pipeline_locks` — one row per `(repo_id, co_number)`; its existence *is* the lock.
@@ -143,6 +148,16 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   addressed, so a moved sha simply misses the cache and rebuild needs no invalidation
   step. A performance store only — [repoMap.js](app/lib/repoMap.js) builds the map live if
   the table can't be read, and the write guard's correctness never depends on a hit.
+
+  `structural_index_json` / `indexed_at` carry the Phase 21 structural index on the same
+  row — exact per-file line counts and a per-file outline of declaration lines, built by
+  [structuralIndex.js](app/lib/structuralIndex.js) from one pass over the clone inside a
+  sandbox container. **Nullable, and the asymmetry is deliberate:** the rest of the row
+  is buildable from the GitHub API, so it exists as soon as anyone opens the repo page;
+  these two columns need a container, so they exist from the first codegen run onward. A
+  repo with no successful run has the map and no outline. Also a navigation aid only —
+  ranged reads and anchored writes are served and verified against the container's
+  actual bytes, so a stale or absent index costs a wasted read, never a wrong write.
 
 **Observability & admin**
 - `audit_log` — user-facing actions (clarification messages, approvals, branch
@@ -212,16 +227,32 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
      writes inside the container (see
      [apex_nim_integration.md](apex_nim_integration.md) for exactly how). It works from
      a **size-aware file map** of the repo rather than a bare path list, so a file too
-     large to read in full or rewrite is identifiable before a turn is spent on it, and
-     what the map leaves out is stated rather than silently cut. Writes are
-     **not** unconditionally accepted: a write replaces a file's entire contents, so it
-     is accepted only for a file the model demonstrably saw in full (or one that doesn't
-     exist yet), and never from a reply the provider cut off mid-output. A write that
-     fails that test is refused back to the model as a turn it can act on. The guarantee
-     is that **no codegen run silently deletes code the model never read** — a refusal,
-     or a failed codegen stage, is the intended outcome in preference to pushing an
-     unseen deletion to the DEV branch. The container is committed to (`git commit`)
-     while network is still open.
+     large to read in full is identifiable before a turn is spent on it, and what the
+     map leaves out is stated rather than silently cut. One pass over the clone builds a
+     **structural index** — exact line counts and a per-file outline — which costs
+     nothing in API calls or tokens and is what makes a large file navigable by symbol.
+
+     **Reads and writes both address the container's working tree, and both come in two
+     forms.** The model reads a whole file, a line range, or a file's outline; it writes
+     a whole file or a line range. The distinction that matters:
+
+     - A **whole-file write** replaces everything, so it is accepted only for a file the
+       model demonstrably saw in full (or one that doesn't exist yet), and never from a
+       reply the provider cut off mid-output.
+     - A **ranged write** names a span *and restates the text it expects to find there*.
+       Application is **verified, not trusted**: if the anchor doesn't match the file,
+       nothing is written and the real contents go back to the model as a turn, rather
+       than the edit being applied at a guessed offset. The anchor doubles as proof the
+       model saw those lines, which is why a ranged write is safe on a file far too
+       large to read whole.
+
+     A write that fails either test is refused back to the model as a turn it can act
+     on. The guarantee is unchanged and absolute: **no codegen run silently deletes or
+     overwrites code the model never read** — a refusal, or a failed codegen stage, is
+     the intended outcome in preference to pushing an unseen change to the DEV branch.
+     What changed is that a refusal is no longer a dead end: a file too big to rewrite
+     whole can still be edited line-range by line-range. The container is committed to
+     (`git commit`) while network is still open.
    - **Seal** — the sandbox's network is disconnected before build/test. No
      registry egress from this point on; repos must vendor/cache all build/test
      dependencies.

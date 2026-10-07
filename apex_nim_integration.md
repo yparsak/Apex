@@ -99,10 +99,24 @@ repo awareness follows the same two-step shape:
    API (`githubApi.getTreeBySha`), built and cached by
    [app/lib/repoMap.js](app/lib/repoMap.js). This is cheap (one API call) and scales to
    large repos. See "The file map" below for what it contains and how it is selected.
-2. Let the **model pull individual files by path**, on demand, via a `FETCH_FILE:
-   <path>` directive the model emits mid-conversation. Each fetched file is read live
-   from GitHub at the branch's current tip and clipped to **8,000 characters**
-   (`MAX_FILE_CHARS`) before being shown back to the model.
+2. Let the **model pull individual files, or spans of them, by path**, on demand, via a
+   `FETCH_FILE: <path>` / `FETCH_RANGE: <path>:<start>-<end>` / `FETCH_OUTLINE: <path>`
+   directive the model emits mid-conversation. A whole-file read is clipped to **8,000
+   characters** (`MAX_FILE_CHARS`); a ranged read returns at most **400 lines**
+   (`MAX_RANGE_LINES`), line-numbered.
+
+Since Phase 21 "content on demand" means **ranges** on demand, and that is the more
+important half of the rule. A 3,000-line file used to be all-or-nothing — read every
+line or none, rewrite every line or none. Now the model reads the file's outline, pulls
+the two regions it needs, and leaves the other 2,600 lines out of the context entirely.
+The win is not a bigger context window; it is reading less.
+
+**Where the bytes come from differs by call site, and the difference is deliberate:**
+
+| Call site | Reads served from | Why |
+|---|---|---|
+| Clarification, Spec doc | GitHub, at the branch tip | No container exists yet. Nothing here writes, so a line number cannot go stale mid-conversation. |
+| Codegen | **The sandbox container's working tree** | Writes land in the container. A range read from GitHub and an anchored write into the container would drift apart the moment the model makes one edit — it would be reading coordinates from one artifact and writing into another. |
 
 **Clipping is announced, never silent** (ROADMAP.md Phase 19). A complete read is
 labelled *"complete file, N lines, N characters"*; a clipped one is labelled
@@ -113,20 +127,37 @@ the file would delete what it wasn't shown. Previously the model received a bare
 which, paired with codegen's whole-file-replace protocol, silently deleted the other
 94%.
 
-Two further read outcomes are distinct rather than collapsed into "not found":
+Further read outcomes are distinct rather than collapsed into "not found":
 
 - A file over **1 MB** can't be returned by GitHub's contents API. `getFileContent`
   throws `code: 'file_too_large'` instead of mapping the response's different shape to
   `null`, so the model is told the file *exists but is unreadable* — it used to be told
-  the file "was not found," and would then offer to create it from scratch.
+  the file "was not found," and would then offer to create it from scratch. **Codegen no
+  longer hits this at all**, since it reads the local clone; its equivalent ceiling is
+  `MAX_CONTAINER_FILE_BYTES` (2 MB).
+- A **binary** file — one containing a NUL byte, or one that isn't valid UTF-8 — is
+  reported as such rather than read. Container-side only, where the bytes are whatever
+  is on disk rather than something the contents API already decided was text. The second
+  check matters more than it looks: a latin-1-encoded source file decodes with
+  replacement characters, and an anchored write read-modify-writes the whole file, so
+  writing it back would commit mojibake over every non-ASCII character in a file the
+  model never meant to touch.
 - A read that failed for any other reason is reported as a failed read, not an absent
   file.
 
 All of this lives in one module, [app/lib/repoContext.js](app/lib/repoContext.js) —
-the caps, the tree fetch, and the formatter — shared by every call site. `MAX_TREE_PATHS`
-and `MAX_FILE_CHARS` used to be declared separately in `codegenService`,
-`clarificationService`, and `specDocService`; the write guard below is only sound if
-every reader agrees on exactly where truncation happens.
+the caps, the tree fetch, the formatter, and since Phase 21 **the line model** — shared
+by every call site. `MAX_TREE_PATHS` and `MAX_FILE_CHARS` used to be declared separately
+in `codegenService`, `clarificationService`, and `specDocService`; the write guard below
+is only sound if every reader agrees on exactly where truncation happens.
+
+The line model joined it for the same reason, one phase later: a ranged read hands the
+model a line number and an anchored write takes one back, so any two components that
+count lines differently will eventually edit the wrong line. (They did differ. Phase 19's
+`countLines` was a bare `split('\n').length`, which counts a file's terminating newline
+as an extra empty line — so a 231-line file was reported as 232, harmless as prose in a
+truncation warning and an off-by-one against the container's own count the moment ranges
+existed. A file's last line is the last line with text on it.)
 
 The one deliberate exception is the Spec/Communication Protocol doc generator, which
 pre-selects a small fixed set of files instead of letting the model ask (see below) —
@@ -185,7 +216,20 @@ conversation history** for this session (every row in `conversations`, in order)
   surfacing this round-trip in the stored `conversations` transcript. Capped at
   **5 fetches** (`MAX_FILE_FETCHES`) per submitted message; if the model is still
   fetching after 5, Apex falls back to a canned "I wasn't able to gather enough context
-  automatically" question rather than looping forever.
+  automatically" question rather than looping forever. The cap counts *all* the fetch
+  verbs below together.
+- `FETCH_RANGE: <path>:<start>-<end>` — the same GitHub read, sliced here rather than
+  by the API (the contents API has no range form, so the request cost is identical and
+  only the *context* cost differs). Worth more here than in codegen, because this loop
+  gets at most five requests for the entire turn. One caveat: the GitHub read is already
+  clipped at `MAX_FILE_CHARS`, so a range past that point in a very large file reads as
+  past the end of the file and says so. Codegen, reading the container, has no such
+  ceiling.
+- `FETCH_OUTLINE: <path>` — served from the structural index **if some earlier codegen
+  run left one for this exact commit**. Clarification has no container and so cannot
+  build one; a repo with no successful run yet is simply told there is no outline, which
+  costs a turn and nothing else. See "The structural index" below for why the asymmetry
+  is accepted rather than fixed.
 - `FINALIZE_REQUIREMENT:\n<restatement>` — ends the clarification loop for this
   requirement and hands the restated text to overlap detection (below).
 
@@ -221,21 +265,39 @@ admin-instructions shape as clarification, but the trailing content is this sess
 full list of `confirmed_proceed` requirement text (not a conversation to continue), and
 the model can now **write**, not just read.
 
+Before the first model turn, codegen builds the **structural index** from the clone (see
+below) so the file tree in the system prompt can carry exact line counts.
+
 **What the model can do, each turn (up to 40 turns, `MAX_TURNS`):**
-- `FETCH_FILE: <path>` — resolved against **this session's own not-yet-committed
-  writes first** (an in-memory `written` map), falling back to GitHub content at the
-  branch tip only if this session hasn't already written that path. This matters
-  because the sandbox container's cloned tree and the branch tip are identical at clone
-  time — so re-fetching a path the model already wrote earlier *this session* correctly
-  sees its own edit, not the stale upstream copy, without needing to read the
-  container's filesystem at all. **Only `WRITE_FILE` ever touches the container** (via
-  `docker exec`); every read, including of files the model itself wrote, is served from
-  this in-memory map or GitHub.
+- `FETCH_FILE: <path>` — read whole from **the container's working tree**, clipped to
+  `MAX_FILE_CHARS`.
+- `FETCH_RANGE: <path>:<start>-<end>` — 1-based inclusive, at most `MAX_RANGE_LINES`
+  lines, returned line-numbered. **Deliberately does not count as having read the
+  file**: seeing 200 lines of a file is not seeing the file, and letting a range license
+  a whole-file write would hand the Phase 19 guard below exactly the false positive it
+  exists to prevent.
+- `FETCH_OUTLINE: <path>` — the file's declaration lines with their line ranges, from
+  the index.
+- `REPLACE_LINES: <path>:<start>-<end>` followed by `--- EXPECTED` / `--- REPLACEMENT` /
+  `--- END` sections. See "Anchored writes" below.
 - `WRITE_FILE: <path>` followed by the file's **complete** new contents (this replaces
   the whole file, not a diff/patch) — rejected if `<path>` has a leading `/` or any
   `..` segment, with the rejection reason sent back to the model to retry. On success,
   streamed into the container via `dockerRunner.writeFile` (stdin, not an argv string,
   so it isn't subject to shell-escaping or `ARG_MAX`) and recorded in the `written` map.
+  The payload is normalized to exactly one trailing newline; it used to be `trim()`ed
+  along with the rest of the reply, so every file codegen wrote whole landed with
+  `\ No newline at end of file` in its diff.
+
+> **Changed in Phase 21 — this section used to say the opposite.** Through Phase 20 the
+> rule was *"only `WRITE_FILE` ever touches the container; every read, including of
+> files the model itself wrote, is served from an in-memory map or GitHub."* **Both
+> halves are now false.** The container builds the index and serves every read; the
+> in-memory overlay that existed to make the model's own writes re-readable is gone,
+> because reading the actual file makes that case disappear rather than handling it.
+> Flagging it explicitly because it read like architecture rather than a changeable
+> detail, and anyone reasoning from the old sentence will reach wrong conclusions about
+> where a stale read could come from.
 
   **A write is accepted only against a file the model fully saw** (ROADMAP.md Phase 19).
   `dockerRunner.writeFile` is `cat > "$1"` — a truncating overwrite — so a whole-file
@@ -252,24 +314,104 @@ the model can now **write**, not just read.
   as a turn fed back to the model, same shape as the unsafe-path refusal, not a pipeline
   failure, so it can route around the file or finish without it.
 
-  The practical effect until Phase 21 provides a ranged-write alternative: **codegen
-  cannot edit a file larger than `MAX_FILE_CHARS`.** That is the intended, honest
-  behavior — failing the codegen step beats pushing a silent deletion of code the model
-  never saw. Phase 20 makes the constraint visible up front by putting per-file size in
-  the prompt tree and marking oversized files explicitly, so the refusal is predictable
-  rather than surprising.
+  **What Phase 21 changed is what a refusal means, not when it fires.** All four grounds
+  survive unchanged. But the refusal used to be a dead end — "codegen cannot edit a file
+  larger than `MAX_FILE_CHARS`", honest behaviour and still a hard stop. Now every
+  refusal points at `REPLACE_LINES`, which edits a file of any size without restating
+  the parts the model has not seen. The guard went from "this file is off limits" to
+  "not this way."
 - A reply the provider **cut off at `max_tokens`** is a failed turn, not a result: the
   truncated text is discarded without entering the transcript, and the model is told its
   reply was cut off and nothing was written, so it can choose a smaller change. Two such
   replies in one run (`MAX_CUT_OFF_REPLIES`) fails the codegen stage — a file too big to
-  emit in one reply can't be retried into fitting.
+  emit in one reply can't be retried into fitting. Since Phase 21 the nudge names
+  `REPLACE_LINES`, because there genuinely is now a smaller way to say the same edit.
 - `DONE` — ends codegen. Throws (fails the pipeline at the codegen stage) if the model
-  says `DONE` having written zero files, or if 40 turns pass without a `DONE`.
+  says `DONE` having changed nothing, or if 40 turns pass without a `DONE`.
 
 Immediately after codegen returns, `pipelineRunner.js` runs `git add -A && git commit`
 inside the container — so every file the model wrote this turn, not just the ones it
 re-fetched, ends up in the commit regardless of whether the model asked to see them
 again.
+
+#### Anchored writes — `REPLACE_LINES`
+
+    REPLACE_LINES: app/lib/foo.js:1200-1204
+    --- EXPECTED
+    <the current contents of exactly those lines>
+    --- REPLACEMENT
+    <what they should become; empty to delete them>
+    --- END
+
+**The problem this solves is an output ceiling, not an input one.** Editing 20 lines of
+a 3,000-line file via `WRITE_FILE` costs 3,000 lines of *model output*, and `max_tokens`
+cuts the reply off somewhere in the middle. An anchored write costs 20 lines.
+
+**The anchor is the safety property, and it is why this isn't "send a unified diff and
+`git apply` it".** The model states the text it believes occupies the lines it is
+replacing. If that doesn't match the file, nothing is written and the refusal **quotes
+what is actually there**, so the next attempt is self-correcting rather than a loop. A
+patch protocol that fuzzes the offset to make a hunk fit is precisely the failure mode
+this must not have — the result gets pushed to a real branch under an engineer's CO
+number.
+
+The anchor is also *proof the model saw those lines*, which is why a ranged write needs
+no prior-read bookkeeping: it cannot touch a line outside its range, or one inside it
+without having reproduced it first. Reproducing 20 exact lines by guess is not a
+realistic failure mode.
+
+Details worth knowing:
+
+- **Trailing whitespace in `EXPECTED` is tolerated; leading whitespace is not.**
+  Indentation is semantic in Python, YAML and Make, so a mismatch there is a real
+  disagreement about the file. Trailing whitespace is semantic nowhere and is exactly
+  what a model silently drops when restating a line — treating that as a mismatch is how
+  you get the anchor-mismatch loop this protocol has to avoid. It's safe because the
+  anchor is only ever *evidence*: what gets written is the replacement, never the anchor.
+- **Applied host-side**, by reading the whole file out of the container, splicing, and
+  writing it back through the same `dockerRunner.writeFile`. Reading a whole file to
+  change 20 lines is the right trade because the cost being removed is model output
+  tokens, not bytes over a local pipe — and it means verification and write see an
+  identical copy, with no in-container editing tool to get an offset wrong.
+- **A ranged edit does not license a later `WRITE_FILE`.** It's tracked separately from
+  the `written` map and drops whatever read record the model had for that path, since
+  every line after the edit has moved.
+- **Insertion** is "replace a line with itself plus your new lines"; **deletion** is an
+  empty `REPLACEMENT`. An empty `EXPECTED` is rejected outright — an anchorless ranged
+  write is a blind write at a guessed offset.
+- Several edits to one file should go **bottom-up**, so an earlier edit doesn't shift a
+  later one's line numbers. The applied-write reply says so every time.
+- A malformed directive is answered with a *specific* parse error, not the generic
+  "unrecognized response" — otherwise the model retries the same malformed shape until
+  it runs out of turns.
+
+#### The structural index — [structuralIndex.js](app/lib/structuralIndex.js)
+
+Built from **one `exec` pass over the clone Phase 7 already put in the container** — at
+zero GitHub API cost and zero token cost, over a working tree nobody was reading. It
+yields exact per-file line counts (Phase 20 could only estimate them from bytes) and a
+per-file outline of declaration lines with their line ranges.
+
+Extraction is a language-agnostic regex pass in `awk`, assuming only POSIX `sh`, `awk`
+and `git` — the sandbox image is the *user's* image and Phase 7 keeps it per-repo and
+minimal, so Apex doesn't get to assume a toolchain is installed in it. The file list
+comes from `git ls-files`; Phase 20's exclusion rules are applied host-side, so the two
+halves of Apex can't disagree about what a listable file is.
+
+**The outline is a navigation hint, not ground truth.** It will miss declarations and
+invent a few. Nothing downstream trusts it: ranged reads are addressed by line number
+and verified against the file, anchored writes are verified against their anchor, and
+neither consults the outline. A wrong outline costs the model a wasted read, never a
+wrong write. Index-build failure is logged and the run continues without outlines.
+
+Persisted on the Phase 20 `repo_file_maps` row rather than in a second table, which
+introduces one deliberate asymmetry: **the map is available before any pipeline run (it
+comes from the GitHub API); the index only from the first successful codegen onward (it
+needs a container).** Accepted, because the deeper data is only *needed* where the
+container already exists. It is saved only if the container's `HEAD` matches the sha it
+would be keyed under — a push landing between the two lookups would otherwise store this
+commit's outline under that commit's key, which this run wouldn't notice but a later
+clarification would.
 
 ### 4. Spec/Communication Protocol doc — [specDocService.js](app/lib/documents/specDocService.js)
 
@@ -294,17 +436,27 @@ time, never incrementally patched, so there's no prior-document state to feed ba
 
 ## Limits at a glance
 
-No value here has changed since these limits were first set. What Phase 19 changed is
-where the first two are *declared*; what Phase 20 changed is what `MAX_TREE_PATHS`
-*means* — it is no longer the point at which an arbitrary path list got cut, but the size
-of a ranked selection, with everything it leaves out counted and stated in the prompt.
-This table is the only place these are written down outside code, so it names the module.
+None of the pre-existing values here has changed since they were first set. What Phase
+19 changed is where the first two are *declared*; what Phase 20 changed is what
+`MAX_TREE_PATHS` *means* — no longer the point at which an arbitrary path list got cut,
+but the size of a ranked selection, with everything it leaves out counted and stated in
+the prompt. Phase 21 adds rows rather than changing values, except `BYTES_PER_LINE`,
+which now only applies where no structural index exists. This table is the only place
+these are written down outside code, so it names the module.
 
 | Constant | Value | Declared in | Applies to |
 |---|---|---|---|
 | `MAX_TREE_PATHS` | 500 | `app/lib/repoMap.js` (re-exported by `repoContext.js`) | Every call site — files shown in the file map |
-| `BYTES_PER_LINE` | 40 | `app/lib/repoMap.js` | File map — estimating line counts from byte size |
+| `BYTES_PER_LINE` | 40 | `app/lib/repoMap.js` | File map — estimating line counts, **only for files the index doesn't cover** |
 | `MAX_FILE_CHARS` | 8,000 | `app/lib/repoContext.js` | Any individual fetched/pre-selected file's content |
+| `MAX_RANGE_LINES` | 400 | `app/lib/repoContext.js` | `FETCH_RANGE` — lines per ranged read (`MAX_FILE_CHARS` still applies on top) |
+| `MAX_ANCHOR_LINES` | 300 | `app/lib/pipeline/rangedWrite.js` | `REPLACE_LINES` — lines a single anchored write may span |
+| `MAX_REPLACEMENT_LINES` | 1,000 | `app/lib/pipeline/rangedWrite.js` | `REPLACE_LINES` — sanity bound; `max_tokens` binds first |
+| `MAX_CONTAINER_FILE_BYTES` | 2 MB | `codegenService.js` | Codegen — largest file readable/editable from the container |
+| `MAX_INDEX_FILES` | 4,000 | `app/lib/structuralIndex.js` | Structural index — files given an outline |
+| `MAX_SYMBOLS_PER_FILE` | 300 | `app/lib/structuralIndex.js` | Structural index — outline entries per file |
+| `MAX_LINES_SCANNED` | 100,000 | `app/lib/structuralIndex.js` | Structural index — lines scanned per file before giving up |
+| `APEX_INDEX_TIMEOUT_MS` | 120,000 | `app/lib/structuralIndex.js` (env-overridable) | Structural index — whole-repo build timeout |
 | `MAX_FILE_FETCHES` | 5 | `clarificationService.js` | Clarification — `FETCH_FILE` round-trips per message |
 | `MAX_TURNS` | 40 | `codegenService.js` | Codegen — total model turns before failing the pipeline |
 | `MAX_CUT_OFF_REPLIES` | 2 | `codegenService.js` | Codegen — `max_tokens`-cutoff replies tolerated per run |
@@ -341,7 +493,30 @@ map — the model is told this is authoritative guidance, not repo content it as
   failure** — it's the Phase 19 guard working. It becomes a pipeline failure only if the
   model then has nothing left it can legally do and ends with zero files written. The
   fix is not to raise `MAX_FILE_CHARS` (the `max_tokens` output ceiling still makes a
-  3,000-line whole-file rewrite impossible); it's Phase 21's ranged writes.
+  3,000-line whole-file rewrite impossible) — it's `REPLACE_LINES`, which every refusal
+  now points the model at. Since Phase 21, a run that *fails* here means the model
+  declined the ranged route, not that no route existed.
+- **Anchor mismatch on `REPLACE_LINES`** — surfaces to the model as `"Refusing
+  REPLACE_LINES on <path> - the EXPECTED text does not match what is actually on lines
+  <a>-<b>. Nothing was written."` followed by the real contents of those lines.
+  **Not a bug** — it's the verification working, and it's designed to be self-correcting
+  within a turn or two. It becomes a problem only as a *loop*: the same path refused
+  repeatedly until `MAX_TURNS` runs out. Diagnose by reading the refusal text in the
+  codegen transcript, and check for these in order:
+  1. **The model is including the line-number prefixes** Apex adds when displaying a
+     range. Those are display only. The refusal says so explicitly.
+  2. **It's working top-down through several edits to one file**, so each applied edit
+     shifts the line numbers of the next. Every applied-write reply states the new
+     length and says to work bottom-up.
+  3. **Leading whitespace differs.** Deliberately not tolerated (trailing whitespace is).
+     A de-indented anchor in a Python file refuses, correctly.
+- **Index build failure** — surfaces in the worker log as `"structural index unavailable
+  - codegen continues without outlines"` with a reason, **never as a pipeline failure**.
+  Consequences are bounded and cosmetic: the file tree falls back to Phase 20's `~`
+  estimates, and `FETCH_OUTLINE` answers "no outline is available". Ranged reads and
+  anchored writes are unaffected — they read and verify against the container directly.
+  Most likely causes are an image with no `awk`, or a repo so large the 120-second
+  `APEX_INDEX_TIMEOUT_MS` expires.
 - **A file over 1 MB** — surfaces to the model as `"<path> exists but could not be read:
   it is <n> characters, over the 1 MB limit of the file-contents API..."`, and any write
   to it is refused. Before Phase 19 this was reported as "not found," and the model

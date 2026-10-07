@@ -29,6 +29,12 @@ DEV branch faster, not to make the final call.
 4. **Implement, in isolation.** A throwaway, network-sealed container clones the repo,
    writes the code, builds it, and tests it. If a step fails, the container is kept
    alive so the run can resume from where it died instead of starting over.
+
+   Edits are **targeted, not wholesale rewrites**: the AI navigates a large file by its
+   outline, reads the handful of regions it needs, and replaces specific line ranges —
+   restating the exact text it expects to find there first, so an edit that would land
+   in the wrong place is refused rather than applied. It never rewrites a file it hasn't
+   read in full.
 5. **Push to DEV.** Only a passing build/test result ever gets pushed, and only to a
    `dev/**` branch — a GitHub App scoped to exactly that, with no merge authority at
    all.
@@ -89,9 +95,12 @@ make clean      # full reset - also removes the data volume and network
 ## Project structure
 
 - `app/` — Express routes, views (EJS), and `lib/` service modules.
-  - `lib/repoContext.js` / `lib/repoMap.js` — the one place repo content reaches the
-    model: shared read caps and the truncation-announcing file read, over a cached,
-    size-aware map of each commit's files.
+  - `lib/repoContext.js` / `lib/repoMap.js` / `lib/structuralIndex.js` — the one place
+    repo content reaches the model: shared read caps, the line model, and the
+    truncation-announcing file and range reads, over a cached, size-aware map of each
+    commit's files plus a per-file outline built from the sandbox's own clone.
+  - `lib/pipeline/rangedWrite.js` — the anchored-write protocol: parse a line-range
+    edit, verify its anchor against the file, splice or refuse.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
 - `specDocWorker.js` — Spec/Communication Protocol doc regeneration and repo-file-map
   retirement, run nightly via cron.

@@ -13,6 +13,7 @@ const overlapService = require('./overlapService');
 const auditLog = require('./auditLog');
 const repoClarificationInstructions = require('./repoClarificationInstructions');
 const repoContext = require('./repoContext');
+const structuralIndex = require('./structuralIndex');
 
 const MAX_FILE_FETCHES = 5;
 
@@ -21,17 +22,22 @@ const SYSTEM_PROMPT = [
   'Order (CO) in the repo below, and your job is to ask clarifying questions - grounded in',
   'the actual repo contents, not generic ones - before implementation starts.',
   '',
-  "You are given the repo's file tree, with each file's size and approximate length. You",
-  "do not have any file's contents unless you ask for them, and a file larger than the",
-  'read limit comes back partial - the reply will say so when that happens.',
+  "You are given the repo's file tree, with each file's size and length. You do not have",
+  "any file's contents unless you ask for them, and a file larger than the read limit comes",
+  'back partial - the reply will say so when that happens.',
   '',
-  'Respond using exactly ONE of these three modes, and nothing else:',
+  'Respond using exactly ONE of these modes, and nothing else:',
   '',
   '1. Ask a clarifying question: just write the question in plain text.',
   '2. Request a file: write a single line, exactly `FETCH_FILE: <path>`, and nothing else on',
   '   that turn. The tree below may not list every file in the repo - it says so when it is',
   '   abridged - so a path you have good reason to believe exists is worth requesting.',
-  '3. Finalize: once the engineer has answered enough that an implementer could act without',
+  '3. Request part of a file: a single line, exactly `FETCH_RANGE: <path>:<start>-<end>`, with',
+  '   1-based inclusive line numbers. Use this instead of FETCH_FILE on a large file - you',
+  '   have very few requests available, so spend them on the regions that matter.',
+  "4. Request a file's structure: a single line, exactly `FETCH_OUTLINE: <path>`. Returns the",
+  "   file's declaration lines with their line ranges, when Apex has an outline for it.",
+  '5. Finalize: once the engineer has answered enough that an implementer could act without',
   '   further clarification, write `FINALIZE_REQUIREMENT:` followed by a newline and a',
   '   concise, complete restatement of the requirement that folds in everything learned.',
   '',
@@ -44,8 +50,8 @@ async function getConversation(sessionId) {
   return rows;
 }
 
-function toModelMessages(map, conversation, instructions) {
-  const treeBlock = repoContext.renderTree(map);
+function toModelMessages(map, index, conversation, instructions) {
+  const treeBlock = repoContext.renderTree(map, index);
   // Admin-authored guidance is a separate block from the file tree/FETCH_FILE
   // path - it's authoritative instruction, not repo content the model asked
   // for (see ROADMAP.md Phase 6).
@@ -58,10 +64,18 @@ function toModelMessages(map, conversation, instructions) {
   ];
 }
 
-// Resolves FETCH_FILE round-trips inline against a scratch copy of the
-// message list; only the final question or finalize payload is returned for
-// the caller to persist.
-async function runModelLoop(messages, org, repo, branch, session) {
+// Resolves FETCH_* round-trips inline against a scratch copy of the message
+// list; only the final question or finalize payload is returned for the caller
+// to persist.
+//
+// Reads here are served from GitHub, not from a container - clarification runs
+// before any pipeline run, so there is no container to read from (see
+// ROADMAP.md Phase 21: the index-bearing half of Apex starts at codegen). That
+// is sound in a way the codegen side would not have been: nothing in this loop
+// writes, so the branch tip cannot move out from under a line number
+// mid-conversation the way a ranged read and an anchored write could drift
+// apart.
+async function runModelLoop(messages, org, repo, branch, session, index) {
   const scratch = messages.slice();
 
   for (let attempt = 0; attempt < MAX_FILE_FETCHES; attempt++) {
@@ -91,6 +105,59 @@ async function runModelLoop(messages, org, repo, branch, session) {
       scratch.push({
         role: 'user',
         content: repoContext.formatFileForModel(path, record, { ref: branch.branch_name }),
+      });
+      continue;
+    }
+
+    // Phase 21. The win is the same one codegen gets - read the 200 lines that
+    // matter instead of the first 8000 characters of a file that happens to
+    // start with its licence header - and it matters more here, because this
+    // loop gets at most MAX_FILE_FETCHES requests for the entire turn.
+    const rangeMatch = reply.match(/^FETCH_RANGE:\s*(.+)$/);
+    if (rangeMatch) {
+      const spec = repoContext.parseRangeSpec(rangeMatch[1]);
+      scratch.push({ role: 'assistant', content: reply });
+      if (!spec) {
+        scratch.push({
+          role: 'user',
+          content: 'Malformed FETCH_RANGE. The line must be exactly `FETCH_RANGE: <path>:<start>-<end>`.',
+        });
+        continue;
+      }
+      // Read whole, slice here: the contents API has no range form, so the
+      // request cost is identical either way and only the *context* cost
+      // differs - which is the cost this phase is about.
+      const record = await repoContext.readFileForModel(org.name, repo.name, spec.path, branch.branch_name);
+      if (record.status !== 'ok') {
+        scratch.push({
+          role: 'user',
+          content: repoContext.formatFileForModel(spec.path, record, { ref: branch.branch_name }),
+        });
+        continue;
+      }
+      // Caveat worth naming: `record.content` is already clipped at
+      // MAX_FILE_CHARS by the GitHub read, so a range beyond that point in a
+      // very large file reads as past the end of the file. extractRange says
+      // so rather than returning the wrong lines, and the codegen side - where
+      // the container serves the real file - has no such ceiling.
+      const range = repoContext.extractRange(record.content, spec.start, spec.end);
+      scratch.push({ role: 'user', content: repoContext.formatRangeForModel(spec.path, range) });
+      continue;
+    }
+
+    // Outlines are whatever an earlier codegen run left behind for this exact
+    // commit (see structuralIndex.js on the asymmetry): clarification has no
+    // container, so it cannot build one. A repo with no successful run yet
+    // simply gets told there is no outline, which costs a turn and nothing else.
+    const outlineMatch = reply.match(/^FETCH_OUTLINE:\s*(.+)$/);
+    if (outlineMatch) {
+      const path = outlineMatch[1].trim();
+      scratch.push({ role: 'assistant', content: reply });
+      scratch.push({
+        role: 'user',
+        content:
+          structuralIndex.renderOutline(index, path) ||
+          `No outline is available for ${path}. Read it directly instead, e.g. \`FETCH_RANGE: ${path}:1-200\`.`,
       });
       continue;
     }
@@ -159,9 +226,13 @@ async function submitMessage({ session, branch, org, repo, user, text }) {
     getConversation(session.id),
     repoClarificationInstructions.getInstructions(repo.id),
   ]);
-  const messages = toModelMessages(tree, conversation, instructions);
+  // Sequenced after the tree, not alongside it: the index is keyed on the
+  // commit sha the tree just resolved. No sha (a degraded, empty map) means no
+  // index, which is the correct answer rather than a missing one.
+  const index = tree.sha ? await structuralIndex.loadIndex(repo.id, tree.sha) : structuralIndex.emptyIndex();
+  const messages = toModelMessages(tree, index, conversation, instructions);
 
-  const result = await runModelLoop(messages, org, repo, branch, session);
+  const result = await runModelLoop(messages, org, repo, branch, session, index);
 
   if (result.kind === 'question') {
     await db.query("INSERT INTO conversations (session_id, role, content) VALUES (?, 'assistant', ?)", [

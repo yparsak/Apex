@@ -407,6 +407,32 @@ CREATE TABLE IF NOT EXISTS repo_file_maps (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
+-- Phase 21: structural index, carried on the Phase 20 row rather than in a
+-- second table
+-- ---------------------------------------------------------------------------
+
+-- Written by app/lib/structuralIndex.js from one awk pass over the clone
+-- inside a sandbox container: exact per-file line counts (Phase 20 could only
+-- estimate them from bytes) and a per-file outline of declaration-looking
+-- lines with their line numbers.
+--
+-- NULLable, and the asymmetry that makes it so is deliberate (see ROADMAP.md
+-- Phase 21). The rest of this row is buildable from the GitHub API alone, so
+-- it exists as soon as anyone opens the repo page. This column needs a
+-- container, so it exists from the first codegen run onward - a repo with no
+-- successful run yet has the map and no outline. That is fine because the
+-- index is only ever *needed* where a container already exists; clarification
+-- reads it when some earlier run happened to leave one for the same commit,
+-- and does without when it did not.
+--
+-- Nothing's correctness depends on this column. Ranged reads and anchored
+-- writes are both served and verified against the container's actual bytes;
+-- the index is navigation only, and a stale or absent one costs the model a
+-- wasted read, never a wrong write.
+ALTER TABLE repo_file_maps ADD COLUMN IF NOT EXISTS structural_index_json LONGTEXT NULL AFTER paths_json;
+ALTER TABLE repo_file_maps ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMP NULL DEFAULT NULL AFTER structural_index_json;
+
+-- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is
 -- already taken by the AI-pipeline sessions table above.
 -- ---------------------------------------------------------------------------
