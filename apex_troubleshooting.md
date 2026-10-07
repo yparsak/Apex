@@ -175,6 +175,13 @@ Do not "fix" this by raising `MAX_FILE_CHARS`: the output-token ceiling still ma
 3,000-line whole-file rewrite impossible, and the write would then be accepted and cut
 off instead of refused. Split the change across smaller files, or make that edit by hand.
 
+Since Phase 20 the prompt's file tree marks every such file `[too large to read in full
+or rewrite]` with its size, so the model should be steering around them rather than
+discovering the limit mid-run. If you are seeing this refusal *often*, check that the
+tree block in the prompt is actually rendering sizes — a `(tree unavailable)` block means
+the map fetch failed and the model is working blind (see "The model behaves as though
+files don't exist").
+
 **The model says a file "was not found" and offers to create it, but the file clearly
 exists on the branch.**
 If the file is over 1 MB, this was the pre-Phase-19 behavior: GitHub's contents API
@@ -215,6 +222,40 @@ cron (`make spec-doc-worker`; see ROADMAP.md Phase 15), completely decoupled fro
 3. Check `spec_doc_jobs` for a `failed` row for that repo, and
    `logs/spec-doc-worker.log` for the error (each job failure is logged independently;
    one repo's failure doesn't block others draining from the same queue).
+
+Note this worker now also retires stale `repo_file_maps` rows (ROADMAP.md Phase 20), so
+step 1 has a second symptom: if the nightly invocation isn't running at all, that table
+grows without bound. It won't produce wrong behavior — maps are keyed by commit sha, so
+an old row is never served for a new commit — but it is the same root cause.
+
+## The model behaves as though files don't exist
+
+Symptom: clarification asks about files that are obviously there, codegen creates a file
+that already exists, or codegen refuses a write saying it can't confirm whether the file
+exists. All of these trace to the repo file map (ROADMAP.md Phase 20,
+[repoMap.js](app/lib/repoMap.js)) rather than to the model.
+
+1. **Read the tree block in the prompt first.** It is self-describing: it states how
+   many of the repo's files it is showing, how many were excluded as generated/vendored/
+   non-text, how many were omitted for space, and whether GitHub's own tree response was
+   truncated. Most "the model can't see my file" reports are answered by that line.
+2. **An excluded or omitted file is still known to Apex.** The map stores the commit's
+   full path list separately from what the prompt shows, and that full list is what the
+   codegen write guard checks — so a file missing from the prompt does *not* become a
+   file codegen will blindly create over. If the model is nonetheless ignoring a file
+   that matters, the fix is selection (the exclusion and ranking rules in `repoMap.js`),
+   not the guard.
+3. **`(tree unavailable)` means the tree fetch failed**, not that the repo is empty.
+   Check GitHub App credentials and reachability (see "GitHub App / token issues").
+   Codegen still runs in this state, but can only write files it explicitly fetched
+   first.
+4. **A refusal naming a file as too large is expected behavior**, not a map problem —
+   see "Codegen refuses to write a large file". The map is what makes that refusal
+   visible up front rather than a surprise mid-run.
+5. **A map row is never stale for a given commit** — `repo_file_maps` is keyed by
+   `(repo_id, commit_sha)`, so a moved branch misses the cache rather than serving an old
+   answer. If you suspect the cache anyway, deleting that repo's rows is safe: the next
+   call rebuilds from GitHub.
 
 ## Permissions and access
 

@@ -19,8 +19,10 @@ const SYSTEM_PROMPT = [
   'already been clarified and confirmed; implement them now, directly in this',
   "repo's working tree, inside an isolated sandbox.",
   '',
-  "You are given the repo's file tree. You do not have any file's contents unless",
-  'you request them, and your own edits are not visible to you until you re-request them.',
+  "You are given the repo's file tree, with each file's size and approximate length. You",
+  "do not have any file's contents unless you request them, and your own edits are not",
+  'visible to you until you re-request them. Use the sizes to choose where to work: a file',
+  'marked as too large to read in full cannot be rewritten through this interface at all.',
   '',
   'Respond using exactly ONE of these on every turn, and nothing else:',
   '',
@@ -40,8 +42,8 @@ const SYSTEM_PROMPT = [
   'questions - if something is ambiguous, make the most reasonable implementation choice.',
 ].join('\n');
 
-function buildSystemMessage(tree, instructions, requirementsText) {
-  const treeBlock = repoContext.renderTree(tree);
+function buildSystemMessage(map, instructions, requirementsText) {
+  const treeBlock = repoContext.renderTree(map);
   const instructionsBlock = instructions
     ? `\n\n=== ADMIN CLARIFICATION INSTRUCTIONS (authoritative) ===\n${instructions}`
     : '';
@@ -60,7 +62,10 @@ function isUnsafePath(path) {
 //   - it fetched the path and was shown the entire file
 //   - it fetched the path and the file genuinely does not exist, so this creates it
 //   - it never fetched the path, but the path is absent from a *complete* file
-//     tree, which is equally proof the file does not exist yet
+//     tree, which is equally proof the file does not exist yet. Since Phase 20
+//     `tree.paths` is the repo's whole blob list rather than the 500 paths the
+//     prompt happened to show, so this ground is sound even for a file the
+//     model was never shown - and it covers far more new files than it used to.
 // Everything else - a partial read, a >1 MB file, a failed read, or no read at
 // all against a tree we know is clipped - is refused. Until Phase 21 provides
 // a ranged write, that means codegen cannot edit a file over the read cap,
@@ -114,11 +119,11 @@ function refuseWriteReason({ path, written, reads, tree }) {
 // codegen-stage pipeline failure, same as any other step failure.
 async function runCodegen({ containerId, org, repo, branch, repoRoot, requirementsText, sessionId }) {
   const [tree, instructions] = await Promise.all([
-    repoContext.fetchTree(org.name, repo.name, branch.branch_name),
+    repoContext.fetchTree(org, repo, branch.branch_name),
     repoClarificationInstructions.getInstructions(repo.id),
   ]);
 
-  const messages = [{ role: 'system', content: buildSystemMessage(tree.paths, instructions, requirementsText) }];
+  const messages = [{ role: 'system', content: buildSystemMessage(tree, instructions, requirementsText) }];
   const written = new Map(); // repo-relative path -> content, this session's own edits
   const reads = new Map(); // repo-relative path -> read record, what the model has actually seen
 

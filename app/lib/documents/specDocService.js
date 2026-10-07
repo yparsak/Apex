@@ -8,6 +8,11 @@ const usageService = require('../model/usageService');
 const repoContext = require('../repoContext');
 const { processLogger } = require('../logger');
 
+// A hardcoded allowlist, which is why this doc is thin for a large repo - it
+// is written from packaging metadata and a readme. Phase 20's size-aware map
+// makes a map-driven selection possible here, but doing it changes generated
+// doc content, which is Phase 15's concern and wants its own before/after
+// review (see ROADMAP.md Phase 20).
 const KEY_FILES = ['README.md', 'package.json', 'apex.pipeline.json'];
 
 const SYSTEM_PROMPT = [
@@ -22,7 +27,7 @@ const SYSTEM_PROMPT = [
 ].join('\n');
 
 async function buildContext(org, repo, branchName) {
-  const tree = await repoContext.fetchTree(org.name, repo.name, branchName);
+  const tree = await repoContext.fetchTree(org, repo, branchName);
 
   // A key file clipped at the read cap is labelled as clipped, same as every
   // other reader (see ROADMAP.md Phase 19) - a doc written from the first 8000
@@ -38,7 +43,7 @@ async function buildContext(org, repo, branchName) {
     fileBlocks.push(repoContext.formatFileForModel(path, record));
   }
 
-  return `=== FILE TREE ===\n${repoContext.renderTree(tree.paths)}\n\n${fileBlocks.join('\n\n')}`;
+  return `=== FILE TREE ===\n${repoContext.renderTree(tree)}\n\n${fileBlocks.join('\n\n')}`;
 }
 
 async function generateForRepo(job) {

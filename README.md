@@ -89,7 +89,11 @@ make clean      # full reset - also removes the data volume and network
 ## Project structure
 
 - `app/` — Express routes, views (EJS), and `lib/` service modules.
+  - `lib/repoContext.js` / `lib/repoMap.js` — the one place repo content reaches the
+    model: shared read caps and the truncation-announcing file read, over a cached,
+    size-aware map of each commit's files.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
-- `specDocWorker.js` — Spec/Communication Protocol doc regeneration, run nightly via cron.
+- `specDocWorker.js` — Spec/Communication Protocol doc regeneration and repo-file-map
+  retirement, run nightly via cron.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.

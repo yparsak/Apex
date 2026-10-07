@@ -5,6 +5,8 @@
 // regeneration, or vice versa.
 const db = require('../db');
 const githubApi = require('../github/githubApi');
+const repoMap = require('../repoMap');
+const { processLogger } = require('../logger');
 
 // scanForStaleRepos() - for every repo, compares its default branch's
 // current HEAD sha on GitHub to repos.spec_doc_synced_commit_sha (NULL counts
@@ -41,6 +43,18 @@ async function scanForStaleRepos() {
       'queued',
       trunkSha,
     ]);
+  }
+
+  // Phase 20's file maps ride this scanner rather than inventing a second
+  // schedule: rebuild is already handled by the (repo_id, commit_sha) key -
+  // a moved trunk simply misses the cache - so the only thing left to do on a
+  // timer is retire maps for shas nobody reads any more. Failure here is not
+  // worth failing the scan over; a map table that grows a little is harmless.
+  try {
+    const removed = await repoMap.pruneUnused();
+    if (removed) processLogger().info({ removed }, 'pruned unused repo file maps');
+  } catch (err) {
+    processLogger().error({ err }, 'repo file map prune failed');
   }
 }
 

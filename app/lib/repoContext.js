@@ -11,8 +11,9 @@
 // is the whole file, and readFileForModel's own caller (codegenService) uses
 // that record to decide whether a whole-file replace is safe.
 const githubApi = require('./github/githubApi');
+const repoMap = require('./repoMap');
 
-const MAX_TREE_PATHS = 500;
+const MAX_TREE_PATHS = repoMap.MAX_TREE_PATHS;
 const MAX_FILE_CHARS = 8000;
 const TREE_UNAVAILABLE = '(tree unavailable)';
 
@@ -20,22 +21,29 @@ function countLines(text) {
   return text.length === 0 ? 0 : text.split('\n').length;
 }
 
-// fetchTree(...) -> { paths, complete }. `complete` is false when the path
-// list was cut by MAX_TREE_PATHS or the call failed outright, which matters
-// beyond the prompt text: codegenService treats "absent from a complete tree"
-// as proof a path is new, and that inference is invalid against a clipped
-// tree. (Honoring GitHub's own `truncated` flag is Phase 20.)
-async function fetchTree(owner, repoName, ref) {
-  try {
-    const paths = await githubApi.getTree(owner, repoName, ref);
-    return { paths: paths.slice(0, MAX_TREE_PATHS), complete: paths.length <= MAX_TREE_PATHS };
-  } catch (err) {
-    return { paths: [], complete: false }; // degrade to no tree context rather than blocking the caller
-  }
+// fetchTree(org, repo, ref) -> a repo map (see repoMap.js). Thin wrapper kept
+// so all three readers still enter repo context through one module.
+//
+// `complete` keeps the meaning Phase 19 gave it - "absent from this list is
+// proof the path does not exist" - but Phase 20 makes it both stricter and
+// less often false. Stricter, because GitHub's own `truncated` flag now clears
+// it, which nothing checked before. Less often false, because `paths` is now
+// the repo's *entire* blob list rather than the first 500: prompt-side
+// selection no longer costs the write guard any fidelity, so codegen can
+// create new files in a large repo without a wasted FETCH_FILE turn each.
+async function fetchTree(org, repo, ref) {
+  return repoMap.getMap(repo.id, org.name, repo.name, ref);
 }
 
-function renderTree(paths) {
-  return paths.length ? paths.join('\n') : TREE_UNAVAILABLE;
+// renderTree(map) - the prompt's file-tree block. Per-file size and an
+// estimated line count, plus an explicit statement of what was left out, so
+// the model knows which files it cannot read or rewrite before it spends a
+// turn finding out (see ROADMAP.md Phase 20). The read limit is passed through
+// from here because MAX_FILE_CHARS is this module's constant, and the marker
+// in the tree has to agree with the refusal in codegenService.
+function renderTree(map) {
+  if (!map || !map.entries || map.entries.length === 0) return TREE_UNAVAILABLE;
+  return repoMap.renderMap(map, { readLimitChars: MAX_FILE_CHARS });
 }
 
 // readFileForModel(...) -> a read record, never a throw. One of:

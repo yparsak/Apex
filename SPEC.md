@@ -31,7 +31,7 @@ Apex is three independent Node.js processes plus a database, each its own contai
 |---|---|---|
 | `apex-app` | [app.js](app.js) | Express + EJS web app. Auth, repo/branch browsing, the clarification UI, admin screens, document views. |
 | `apex-worker` | [worker.js](worker.js) | Polls `sessions` for `queued` rows, one at a time, and drives each one's full sandboxed pipeline (clone → codegen → build → test → push) via [pipelineRunner.js](app/lib/pipeline/pipelineRunner.js). |
-| `apex-spec-doc-worker` | [specDocWorker.js](specDocWorker.js) | One-shot script, invoked nightly by cron (`make spec-doc-worker`): scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
+| `apex-spec-doc-worker` | [specDocWorker.js](specDocWorker.js) | One-shot script, invoked nightly by cron (`make spec-doc-worker`): scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc, retires `repo_file_maps` rows unread for 14 days, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
 | `apex-mariadb` | — | MariaDB 11. The only shared state between the three processes above — there's no Redis, no message queue. Locks, job queues, and session state all live in ordinary tables (see [db/schema.sql](db/schema.sql)). |
 
 `apex-app` never touches Docker. Only `apex-worker` creates sandbox containers, and it
@@ -136,6 +136,14 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 - `spec_doc_jobs` — the queue `specDocWorker.js` drains; one `queued` row per repo whose
   trunk has moved since `repos.spec_doc_synced_commit_sha`.
 
+**Repo structure**
+- `repo_file_maps` — `(repo_id, commit_sha)`, one cached file map per commit: the ranked,
+  size-annotated subset shown in model prompts plus the commit's full blob path list, with
+  GitHub's `truncated` flag and the counts of what was excluded and omitted. Content-
+  addressed, so a moved sha simply misses the cache and rebuild needs no invalidation
+  step. A performance store only — [repoMap.js](app/lib/repoMap.js) builds the map live if
+  the table can't be read, and the write guard's correctness never depends on a hit.
+
 **Observability & admin**
 - `audit_log` — user-facing actions (clarification messages, approvals, branch
   lifecycle changes, pipeline outcomes).
@@ -202,7 +210,10 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
      never leaves the sandbox.
    - **Codegen** — the model turns the session's confirmed requirements into file
      writes inside the container (see
-     [apex_nim_integration.md](apex_nim_integration.md) for exactly how). Writes are
+     [apex_nim_integration.md](apex_nim_integration.md) for exactly how). It works from
+     a **size-aware file map** of the repo rather than a bare path list, so a file too
+     large to read in full or rewrite is identifiable before a turn is spent on it, and
+     what the map leaves out is stated rather than silently cut. Writes are
      **not** unconditionally accepted: a write replaces a file's entire contents, so it
      is accepted only for a file the model demonstrably saw in full (or one that doesn't
      exist yet), and never from a reply the provider cut off mid-output. A write that

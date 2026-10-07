@@ -1374,14 +1374,72 @@ Open / undecided for this phase:
     open questions (line counts vs. byte inference; global vs. per-repo exclusion rules)
     are still unresolved when it ships.
 
+**Implementation notes (decisions made while building this phase):**
+- **The map is [app/lib/repoMap.js](app/lib/repoMap.js); `repoContext` stays the single
+  door.** `repoContext.fetchTree`/`renderTree` keep their names and all three readers
+  keep calling them — the new module sits behind them. Phase 19's whole point was that
+  one module owns where truncation happens, and splitting the tree out from under it
+  would have reopened exactly that. `fetchTree` now takes `(org, repo, ref)` objects
+  rather than `(ownerName, repoName, ref)`, because the cache key needs `repo.id`.
+- **Prompt-facing selection and guard-facing fidelity are separate fields, and this is
+  the phase's most important decision.** The map carries the ranked, size-annotated
+  `entries` the prompt shows *and* `paths`, the commit's entire blob list. Had selection
+  simply narrowed one list, every file squeezed out of the prompt would have become a
+  file Phase 19's guard believed did not exist — turning a readability improvement into a
+  data-loss regression. Keeping both also *widens* the guard's useful case: `complete` is
+  now false only when GitHub itself truncated, not whenever a repo exceeds 500 files, so
+  codegen can create new files in a large repo without burning a `FETCH_FILE` turn each
+  to prove absence. Net effect on Phase 19: strictly fewer refusals, strictly no new
+  risk.
+- **Line counts are inferred from bytes** (`BYTES_PER_LINE = 40`) and rendered with a
+  `~`, as the open question leaned. Exact counts need every file's content, which is the
+  cost this module exists to avoid; sizes are exact and are what the read-limit marker
+  keys on, so the estimate is decoration rather than load-bearing. Phase 21's container
+  pass can replace it.
+- **Exclusion rules are global.** Nothing in a real repo layout yet demands per-repo
+  overrides that the dir/extension/filename rules don't already cover, and
+  `apex.pipeline.json` staying plain is a standing Stack decision. Carried to
+  [undecided_topics.md](undecided_topics.md) rather than closed — a monorepo will
+  probably force it.
+- **Ranking is by role, then shallowness, then path** — root manifests and docs, then
+  source, then tests, then other text config, then the remainder. Deterministic by
+  construction, which matters more than it looks: the same commit must render the same
+  tree, or a cached map and a freshly built one would disagree.
+- **The map is a cache, never a source of truth.** Every DB failure on either side falls
+  through to building from GitHub, and every GitHub failure degrades to an empty map with
+  `complete: false`. Nothing about the write guard's soundness depends on a cache hit —
+  the worst a broken `repo_file_maps` can do is cost tree calls.
+- **Retirement is by last use, not by "is this sha still a branch head".** Rows are
+  touched on read and `pruneUnused(14)` runs off Phase 15's nightly scanner. Pruning by
+  branch head would evict exactly the maps worth keeping: the ones for in-flight DEV
+  branches. Rebuild needs no invalidation at all — the key is content-addressed, so a
+  moved trunk simply misses.
+- **`githubApi.getTree` was removed rather than kept alongside `getTreeBySha`.** The map
+  must resolve the ref to a sha *before* deciding whether a tree call is needed, so the
+  ref-resolving convenience wrapper had no caller left and would have been dead code.
+- **Both model-facing prompts were updated, not just the tree data.** Codegen's system
+  prompt now tells the model to use the sizes and that a marked file cannot be rewritten
+  at all; clarification's no longer claims `<path>` must be "one path from the tree
+  below", which stopped being true the moment the tree became a selection. A prompt that
+  describes the old tree would have made the new one actively misleading.
+- **`specDocService.KEY_FILES` deliberately left hardcoded.** The map makes a map-driven
+  selection possible here, but it changes generated doc content, which is Phase 15's
+  concern and wants its own before/after review. Noted in code at the constant.
+- **Not verified by execution.** The repo has no test runner and no Node runtime was
+  available in the implementing session, so unlike Phase 19 this phase ships on review
+  only. The selection/ranking/render logic in `repoMap.js` is pure and has no I/O, so it
+  is the part most worth a harness run before trusting it in anger — see Open below.
+
 Open / undecided for this phase:
-- **Whether line counts come from the map's own pass or are inferred from byte size.**
-  GitHub gives bytes for free; exact line counts need content, which is the expensive
-  part — unless Phase 21's container pass produces them, in which case this phase ships
-  byte-accurate and line-approximate until then. Leaning toward that, not decided.
-- **Whether exclusion rules are global or per-repo** (an `apex.pipeline.json` key). Per-repo
-  is obviously more correct for monorepos and obviously more config surface; Stack
-  decisions have kept that file deliberately plain. Not decided.
+- **Unexercised.** `repoMap.js`'s pure half (`isExcluded`, `rankOf`, `selectEntries`,
+  `renderMap`) and the cache round-trip through `repo_file_maps` have not been run. The
+  highest-value check is a harness that feeds a synthetic 4,000-entry tree through
+  `selectEntries` and asserts the counts in the rendered trailer add up to the total.
+- **Whether exclusion rules should become per-repo** (an `apex.pipeline.json` key).
+  Shipped global; carried forward.
+- **`BYTES_PER_LINE = 40` is a guess.** It is fine for the "is this file big?" judgment
+  the model actually makes with it, and wrong by a wide margin for minified or
+  heavily-commented files — though the former are excluded anyway.
 
 ## Phase 21 — Structural index & ranged reads/anchored writes
 

@@ -62,9 +62,35 @@ refused, and the shared caps moved into `app/lib/repoContext.js`. Still open:
   this phase's scope.
 - **Codegen cannot edit a file over `MAX_FILE_CHARS` (8,000) at all** until Phase 21
   replaces whole-file-replace with ranged writes. This is intended, not a defect — the
-  alternative is silent deletion — but it is a real capability gap, and Phase 20's
-  size-annotated file tree is what makes it visible to the model up front instead of a
-  surprise mid-run.
+  alternative is silent deletion — but it is a real capability gap. Phase 20 made it
+  visible to the model up front (the tree marks such files by name and size) rather than
+  a surprise mid-run, but it did not narrow the gap itself.
+
+## Size-aware Repo File Map (Phase 20)
+
+Phase 20 is built — `app/lib/repoMap.js` renders a ranked, size-annotated file map,
+honors GitHub's `truncated` flag, states what it excluded and omitted, and caches per
+`(repo_id, commit_sha)` in `repo_file_maps`. Line counts ship inferred from byte size
+(`BYTES_PER_LINE = 40`, rendered with `~`), as the phase's first open question leaned.
+Still open:
+
+- **Whether exclusion rules should be global or per-repo.** Shipped global — a fixed set
+  of directory, filename, and extension rules in `repoMap.js`. Per-repo (an
+  `apex.pipeline.json` key) is clearly more correct for a monorepo and clearly more
+  config surface, and `apex.pipeline.json` staying plain JSON is a standing Stack
+  decision. A monorepo whose relevant code sits under a path the global rules exclude
+  will force this.
+- **Exact line counts.** The byte-derived estimate is adequate for the "can I work with
+  this file?" judgment the model makes with it, but it is wrong by a wide margin for
+  unusual files. Exact counts need every file's content, which is the cost the map exists
+  to avoid — Phase 21's container pass is the natural place to produce them.
+- **The map's pure logic is unexercised.** Selection, ranking, and rendering have no test
+  coverage and were not run (no test runner in the repo; no Node runtime in the
+  implementing session). A harness over a synthetic large tree is the obvious first
+  check.
+- **Whether `specDocService.KEY_FILES` becomes map-driven.** The map makes it possible,
+  and a thin Spec/Communication Protocol doc for a large repo is the symptom it would
+  fix, but it changes generated doc content — deferred to Phase 15's own review.
 
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 

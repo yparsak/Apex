@@ -87,16 +87,30 @@ async function listMatchingBranches(owner, repo, prefix) {
   }
 }
 
-// getTree(owner, repo, ref) -> array of blob paths, recursive. Used for
-// Phase 5's up-front context retrieval (see notes.md / ROADMAP.md Phase 5) -
-// paths only, never bulk file contents, so it scales to large repos.
-async function getTree(owner, repo, ref) {
-  const branch = await getBranch(owner, repo, ref);
-  if (!branch) return [];
-  const res = await githubRequest('GET', `/repos/${owner}/${repo}/git/trees/${branch.commit.sha}?recursive=1`);
-  if (!res.ok) throw new Error(`GitHub getTree ${owner}/${repo}@${ref} failed: HTTP ${res.status}`);
+// getTreeBySha(owner, repo, sha) -> { entries: [{ path, bytes }], truncated }.
+// Recursive, blobs only - paths and sizes, never bulk file contents, so it
+// scales to large repos. Used for Phase 5's up-front context retrieval (see
+// notes.md / ROADMAP.md Phase 5), now via repoMap.js. Takes a commit sha, not
+// a ref: repoMap resolves the branch itself because the sha is its cache key,
+// so it has to be known before deciding whether this call is needed at all.
+//
+// Two things this returns that the old paths-only version threw away (see
+// ROADMAP.md Phase 20):
+//   - `bytes` per blob, which GitHub already sends on every entry. It costs no
+//     extra request and it is the whole foundation of the size-aware map: the
+//     model can see a file is too big to read before spending a turn on it.
+//   - `truncated`, GitHub's own flag for "this tree response was itself
+//     clipped". Nothing looked at it before, so an enormous repo yielded a
+//     partial listing that Apex presented to the model as the whole repo - and
+//     that Phase 19's write guard trusted as proof a path did not exist.
+async function getTreeBySha(owner, repo, sha) {
+  const res = await githubRequest('GET', `/repos/${owner}/${repo}/git/trees/${sha}?recursive=1`);
+  if (!res.ok) throw new Error(`GitHub getTree ${owner}/${repo}@${sha} failed: HTTP ${res.status}`);
   const data = await res.json();
-  return (data.tree || []).filter((entry) => entry.type === 'blob').map((entry) => entry.path);
+  const entries = (data.tree || [])
+    .filter((entry) => entry.type === 'blob')
+    .map((entry) => ({ path: entry.path, bytes: Number.isFinite(entry.size) ? entry.size : 0 }));
+  return { entries, truncated: Boolean(data.truncated) };
 }
 
 // getFileContent(owner, repo, path, ref) -> decoded file text, or null if the
@@ -149,7 +163,7 @@ module.exports = {
   getBranch,
   listMatchingBranches,
   createBranchRef,
-  getTree,
+  getTreeBySha,
   getFileContent,
   compareCommits,
 };

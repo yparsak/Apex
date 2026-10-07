@@ -21,14 +21,16 @@ const SYSTEM_PROMPT = [
   'Order (CO) in the repo below, and your job is to ask clarifying questions - grounded in',
   'the actual repo contents, not generic ones - before implementation starts.',
   '',
-  "You are given the repo's file tree (paths only). You do not have any file's contents",
-  'unless you ask for them.',
+  "You are given the repo's file tree, with each file's size and approximate length. You",
+  "do not have any file's contents unless you ask for them, and a file larger than the",
+  'read limit comes back partial - the reply will say so when that happens.',
   '',
   'Respond using exactly ONE of these three modes, and nothing else:',
   '',
   '1. Ask a clarifying question: just write the question in plain text.',
-  '2. Request a file: write a single line, exactly `FETCH_FILE: <path>`, where <path> is one',
-  '   path from the tree below, and nothing else on that turn.',
+  '2. Request a file: write a single line, exactly `FETCH_FILE: <path>`, and nothing else on',
+  '   that turn. The tree below may not list every file in the repo - it says so when it is',
+  '   abridged - so a path you have good reason to believe exists is worth requesting.',
   '3. Finalize: once the engineer has answered enough that an implementer could act without',
   '   further clarification, write `FINALIZE_REQUIREMENT:` followed by a newline and a',
   '   concise, complete restatement of the requirement that folds in everything learned.',
@@ -42,8 +44,8 @@ async function getConversation(sessionId) {
   return rows;
 }
 
-function toModelMessages(tree, conversation, instructions) {
-  const treeBlock = repoContext.renderTree(tree);
+function toModelMessages(map, conversation, instructions) {
+  const treeBlock = repoContext.renderTree(map);
   // Admin-authored guidance is a separate block from the file tree/FETCH_FILE
   // path - it's authoritative instruction, not repo content the model asked
   // for (see ROADMAP.md Phase 6).
@@ -153,11 +155,11 @@ async function submitMessage({ session, branch, org, repo, user, text }) {
   await auditLog.logAction({ sessionId: session.id, userId: user.id, action: 'clarification_message', detail: text });
 
   const [tree, conversation, instructions] = await Promise.all([
-    repoContext.fetchTree(org.name, repo.name, branch.branch_name),
+    repoContext.fetchTree(org, repo, branch.branch_name),
     getConversation(session.id),
     repoClarificationInstructions.getInstructions(repo.id),
   ]);
-  const messages = toModelMessages(tree.paths, conversation, instructions);
+  const messages = toModelMessages(tree, conversation, instructions);
 
   const result = await runModelLoop(messages, org, repo, branch, session);
 

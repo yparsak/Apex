@@ -368,6 +368,45 @@ CREATE TABLE IF NOT EXISTS model_provider_health (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
+-- Phase 20: size-aware repo file map
+-- ---------------------------------------------------------------------------
+
+-- One row per (repo, commit sha), written by app/lib/repoMap.js. Keyed on the
+-- commit rather than the repo so the cache is content-addressed: three callers
+-- in one session share one GitHub tree call, and a repo whose trunk hasn't
+-- moved isn't re-walked at all. Rebuild needs no invalidation step - a moved
+-- sha simply misses.
+--
+-- Two JSON blobs, and the split between them is the point (see ROADMAP.md
+-- Phase 20): selected_json is the ranked, size-annotated subset the prompt
+-- shows, while paths_json is every blob path in the commit. Phase 19's
+-- write guard reads the latter, so narrowing what the model sees never widens
+-- what the guard will approve.
+CREATE TABLE IF NOT EXISTS repo_file_maps (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  repo_id INT UNSIGNED NOT NULL,
+  commit_sha VARCHAR(40) NOT NULL,
+  -- GitHub's own `truncated` flag on the recursive tree response. When set,
+  -- paths_json is incomplete and "absent from this list" proves nothing.
+  github_truncated BOOLEAN NOT NULL DEFAULT FALSE,
+  total_files INT UNSIGNED NOT NULL DEFAULT 0,
+  total_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  excluded_files INT UNSIGNED NOT NULL DEFAULT 0,
+  omitted_files INT UNSIGNED NOT NULL DEFAULT 0,
+  selected_json LONGTEXT NOT NULL,
+  paths_json LONGTEXT NOT NULL,
+  -- Touched on every cache hit. Retirement is by last use, not by whether the
+  -- sha is still a branch head: the map for an in-flight DEV branch is exactly
+  -- the one worth keeping (see specDocScanService.js).
+  last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_repo_file_maps_repo_sha (repo_id, commit_sha),
+  KEY idx_repo_file_maps_last_used (last_used_at),
+  CONSTRAINT fk_repo_file_maps_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is
 -- already taken by the AI-pipeline sessions table above.
 -- ---------------------------------------------------------------------------
