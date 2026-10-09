@@ -1,12 +1,12 @@
 require('dotenv').config();
 
 const appLock = require('./app/lib/appLock');
-const specDocScanService = require('./app/lib/documents/specDocScanService');
-const specDocService = require('./app/lib/documents/specDocService');
+const docScanService = require('./app/lib/documents/docScanService');
+const docService = require('./app/lib/documents/docService');
 const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
-const logger = initProcessLogger('spec-doc-worker');
+const logger = initProcessLogger('doc-worker');
 
 // One-shot script (see ROADMAP.md Phase 15), run on a nightly cadence by
 // whatever cron-like facility the deployment target provides (host crontab,
@@ -38,8 +38,8 @@ async function main() {
   if (lock.locked) {
     logger.warn({ reason: lock.reason }, 'app is locked - skipping spec-doc scan and drain');
   } else {
-    await specDocScanService.scanForStaleRepos();
-    await specDocService.drainQueuedJobs();
+    await docScanService.scanForStaleRepos();
+    await docService.drainQueuedJobs();
   }
 
   logRetention.purgeOnce(logger);

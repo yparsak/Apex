@@ -89,7 +89,7 @@ Still open:
   now covered by the harness described under Phase 21 below, including the no-index
   fallback and the exact/estimate mix. Selection and ranking (`isExcluded`, `rankOf`,
   `selectEntries`) remain unexercised — the harness covers rendering only.
-- **Whether `specDocService.KEY_FILES` becomes map-driven.** The map makes it possible,
+- **Whether `docService.KEY_FILES` becomes map-driven.** The map makes it possible,
   and a thin Spec/Communication Protocol doc for a large repo is the symptom it would
   fix, but it changes generated doc content — deferred to Phase 15's own review.
 

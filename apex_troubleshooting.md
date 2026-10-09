@@ -14,7 +14,7 @@ For architecture background referenced below, see [SPEC.md](SPEC.md) and
 **Logs.** Each process writes structured logs two ways:
 
 ```
-docker logs -f apex-app              # or apex-worker - apex-spec-doc-worker exits
+docker logs -f apex-app              # or apex-worker - apex-doc-worker exits
                                       # right after each nightly run, so this only
                                       # works while that one-shot invocation is live
 tail -f logs/worker.log              # survives container recreation, grep-able on the host
@@ -137,7 +137,7 @@ which is what makes the no-model case recoverable at all. `/login` also stays op
 an admin can get in to fix it. Everyone else gets HTTP 503 with `Retry-After`.
 
 Both conditions also stop `apex-worker` claiming new sessions and stop
-`specDocWorker.js` scanning or draining. A session already running is left to finish
+`docWorker.js` scanning or draining. A session already running is left to finish
 rather than killed mid-pipeline, so nothing is abandoned with a half-written branch and
 a held CO lock. Queued sessions stay queued and resume once the lock clears.
 
@@ -153,7 +153,7 @@ runs unattended overnight with nobody behind it. It uses the **Spec document mod
 
 If docs are coming out on a model you didn't choose, check that page: when the configured
 model has since been disabled or deleted, the section shows a warning naming the model
-actually in use, and `specDocWorker` logs `configured spec-doc model is missing or
+actually in use, and `docWorker` logs `configured spec-doc model is missing or
 disabled - falling back to the catalog default`.
 
 Note the model is stamped on each job when the **nightly scan enqueues it**, not when it
@@ -181,7 +181,7 @@ different checks:
   attempts, exponential backoff) ran and exhausted itself. Check `NVIDIA_API_KEY` and
   `NVIDIA_BASE_URL` are correct and that the NIM endpoint is reachable from wherever the
   call originated (`apex-app` for clarification/overlap, `apex-worker` for codegen,
-  `apex-spec-doc-worker` for the Spec/Communication Protocol doc — each needs outbound
+  `apex-doc-worker` for the Spec/Communication Protocol doc — each needs outbound
   network access at the time of the call; note codegen's network is only open during that
   stage, before build/test seals it).
 - **Immediately, with exactly one request in the logs** — a request-shaped failure
@@ -307,18 +307,18 @@ counts to log.
 
 ## Spec/Communication Protocol doc not updating
 
-This doc regenerates via `apex-spec-doc-worker`, a one-shot script run nightly by
-cron (`make spec-doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
+This doc regenerates via `apex-doc-worker`, a one-shot script run nightly by
+cron (`make doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
 `apex-worker`'s AI-pipeline queue. If it looks stale:
 
-1. Confirm the nightly cron invocation of `make spec-doc-worker` is actually
+1. Confirm the nightly cron invocation of `make doc-worker` is actually
    configured and ran (check the host crontab/systemd timer/CronJob, whichever
    the deployment target uses) — there's no persistent container to check with
    `docker ps` anymore.
 2. Check `repos.spec_doc_synced_commit_sha` against the repo's actual default-branch
    HEAD on GitHub — the scan only enqueues a job when these differ.
 3. Check `spec_doc_jobs` for a `failed` row for that repo, and
-   `logs/spec-doc-worker.log` for the error (each job failure is logged independently;
+   `logs/doc-worker.log` for the error (each job failure is logged independently;
    one repo's failure doesn't block others draining from the same queue).
 
 Note this worker now also retires stale `repo_file_maps` rows (ROADMAP.md Phase 20), so

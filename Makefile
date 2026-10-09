@@ -29,7 +29,7 @@ NODE_IMAGE := docker.io/library/node:22-slim
 # rootless Podman, which already maps to the host user.
 RUN_AS_HOST_USER := --user "$$(id -u):$$(id -g)" -e HOME=/tmp
 
-.PHONY: setup network db-up db-wait migrate install dev worker spec-doc-worker stop create-admin logs db-down clean
+.PHONY: setup network db-up db-wait migrate install dev worker doc-worker stop create-admin logs db-down clean
 
 setup: network db-up db-wait migrate install
 	@echo ""
@@ -98,18 +98,18 @@ worker: db-up
 	  sh -c "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io git ca-certificates >/dev/null && npx nodemon worker.js"
 	@echo "Apex pipeline worker started (container: $(WORKER_CONTAINER))"
 
-# Phase 15: one-shot invocation of specDocWorker.js, decoupled from worker.js's
+# Phase 15: one-shot invocation of docWorker.js, decoupled from worker.js's
 # AI-pipeline poll loop - just GitHub + NIM network access needed, no Docker
 # socket, so this uses the plain Node image the same way `dev` does. Runs to
 # completion and exits (`--rm`, no `-d`/nodemon) rather than staying up as a
 # persistent container - meant to be invoked on a nightly cadence by whatever
 # cron-like facility the deployment target provides (host crontab, systemd
 # timer, container-native CronJob, etc.), e.g. a host crontab entry running
-# `make spec-doc-worker` once every 24 hours.
-spec-doc-worker: db-up
+# `make doc-worker` once every 24 hours.
+doc-worker: db-up
 	$(RUNTIME) run --rm --network $(NETWORK) \
 	  -v "$(CURDIR)":/app -w /app $(RUN_AS_HOST_USER) --env-file .env \
-	  $(NODE_IMAGE) node specDocWorker.js
+	  $(NODE_IMAGE) node docWorker.js
 
 logs:
 	$(RUNTIME) logs -f $(APP_CONTAINER)

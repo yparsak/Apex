@@ -88,7 +88,7 @@ async function setPreferredForUser(userId, modelId) {
 
 // Spec/Communication Protocol doc generation is repo-level and unattended -
 // it runs nightly across every stale repo with no requesting user to inherit a
-// preference from (see app/lib/documents/specDocScanService.js). It used to
+// preference from (see app/lib/documents/docScanService.js). It used to
 // take the catalog default, which forced one choice for both unattended doc
 // writing and interactive codegen; this lets an admin point it at a cheaper
 // model without changing what users get.

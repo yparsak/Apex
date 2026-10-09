@@ -75,7 +75,7 @@ Then, in separate terminals:
 ```
 make dev              # web app -> http://localhost:3000/login
 make worker           # AI pipeline worker - required for sessions to actually run
-make spec-doc-worker  # optional, one-shot doc-regen run - meant to be cron-scheduled nightly
+make doc-worker       # optional, one-shot doc-regen run - meant to be cron-scheduled nightly
 ```
 
 See [docs/Phase1_setup.md](docs/Phase1_setup.md) for what each step does and
@@ -102,7 +102,7 @@ make clean      # full reset - also removes the data volume and network
   - `lib/pipeline/rangedWrite.js` — the anchored-write protocol: parse a line-range
     edit, verify its anchor against the file, splice or refuse.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
-- `specDocWorker.js` — Spec/Communication Protocol doc regeneration and repo-file-map
+- `docWorker.js` — Spec/Communication Protocol doc regeneration and repo-file-map
   retirement, run nightly via cron.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.

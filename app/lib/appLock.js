@@ -27,7 +27,7 @@ const NO_MODEL_MESSAGE =
 // getLockState() runs on every HTTP request (see the gate in app.js) and on
 // every worker poll, so an uncached read would be two queries per request. The
 // cache is a TTL rather than write-invalidation on purpose: app.js, worker.js
-// and specDocWorker.js are three separate containers (see Makefile) with no
+// and docWorker.js are three separate containers (see Makefile) with no
 // shared memory, so an in-process invalidation on an admin write would never
 // reach the other two. A few seconds of lag on engaging maintenance is
 // acceptable; silently serving a stale "unlocked" in the worker forever is not.

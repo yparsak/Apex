@@ -1,7 +1,7 @@
 // Shared repo-context limits and the truncation-announcing read path (see
 // ROADMAP.md Phase 19). Before this module, MAX_TREE_PATHS, MAX_FILE_CHARS and
 // the '(tree unavailable)' fallback were declared three times over -
-// codegenService, clarificationService, specDocService - so a cap could be
+// codegenService, clarificationService, docService - so a cap could be
 // fixed in one reader and left wrong in another. Phase 19's whole-file-write
 // guard is only sound if every reader agrees on exactly where truncation
 // happens, so the caps and the formatter live here together.

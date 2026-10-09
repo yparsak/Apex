@@ -255,8 +255,8 @@ browser.
 - Documents UI: per-repo view plus a global, CO-scoped cross-repo search ("every
   delivery doc for this CO, across every repo I can access").
 - Spec/Communication Protocol doc regeneration is decoupled from `worker.js`'s
-  AI-pipeline poll loop: `specDocScanService.js` (trunk-staleness check) and
-  `specDocService.js` (generation) are triggered by a separate, cron-scheduled script
+  AI-pipeline poll loop: `docScanService.js` (trunk-staleness check) and
+  `docService.js` (generation) are triggered by a separate, cron-scheduled script
   — not drained inline by `worker.js` — that scans for staleness and drains whatever
   lands in `spec_doc_jobs` each run. This bounds doc freshness to the cron interval
   rather than to `worker.js`'s session-processing cadence, so a backlog of queued AI
@@ -289,7 +289,7 @@ browser.
   code, reusing `requirementsLogFormat.js`'s parser. It only searches the requirements
   log; the Spec/Communication Protocol doc is browsable on each repo's own Documents
   page instead, since it has no CO to search by.
-- **`specDocWorker.js` is a plain Node interval loop**, not host cron/systemd — the
+- **`docWorker.js` is a plain Node interval loop**, not host cron/systemd — the
   exact mechanism was explicitly left open pending a deployment target (still
   undecided), and an interval loop is the simplest thing that's actually runnable in
   this Makefile-driven dev setup today. `SPEC_DOC_SCAN_INTERVAL_MS` controls the
@@ -501,12 +501,12 @@ Not in notes.md's original scope.
 Not in notes.md's original scope.
 
 - **Docker-level log rotation**, so `docker logs`/`podman logs` for `apex-app`,
-  `apex-worker`, and `apex-spec-doc-worker` stop growing unbounded: `--log-opt
+  `apex-worker`, and `apex-doc-worker` stop growing unbounded: `--log-opt
   max-size=10m --log-opt max-file=3` added to each container's `run` invocation in the
   Makefile. Zero application code changes; a safety net independent of the structured
   logging work below, not a replacement for it.
 - **Structured app-level logging**, replacing the current scattered `console.log`/
-  `console.error` calls across `app.js`, `worker.js`, `specDocWorker.js`, and
+  `console.error` calls across `app.js`, `worker.js`, `docWorker.js`, and
   `pipelineRunner.js` with a leveled, structured logger ([pino](https://github.com/pinojs/pino)):
   - Levels (`debug`/`info`/`warn`/`error`) instead of one undifferentiated stream, so
     e.g. the routine `[worker] running pipeline for session N` lifecycle noise can be
@@ -533,12 +533,12 @@ Not in notes.md's original scope.
 
 Open / undecided for this phase:
 - Per-process log files (`logs/app.log`, `logs/worker.log`,
-  `logs/spec-doc-worker.log`) vs. one combined file — leaning per-process, since the
+  `logs/doc-worker.log`) vs. one combined file — leaning per-process, since the
   three processes' concerns rarely overlap, but not decided yet.
 - Where the purge sweep itself runs from — a `setInterval` inside each long-running
-  process (`app.js`/`worker.js`/`specDocWorker.js`), or one small standalone script
+  process (`app.js`/`worker.js`/`docWorker.js`), or one small standalone script
   invoked periodically (cron-like, the same open question Phase 8 already has for
-  `specDocWorker.js`'s own interval) — not decided yet.
+  `docWorker.js`'s own interval) — not decided yet.
 - Whether to cross-reference this operational logging with the pipeline-run logs
   already persisted in MariaDB and surfaced on the branch page
   (`pipeline_runs.build_log`/`test_log`, since Phase 9) — e.g. a `runId` field on
@@ -547,13 +547,13 @@ Open / undecided for this phase:
 
 **Implementation notes (decisions made while building this phase):**
 - **Per-process log files, resolved**: `app/lib/logger.js`'s `createLogger(name)`
-  takes `'app'`/`'worker'`/`'spec-doc-worker'` and each writes its own
+  takes `'app'`/`'worker'`/`'doc-worker'` and each writes its own
   `logs/<name>.log` via `pino-roll` (size `10m` + daily rotation combined), alongside
   an unchanged stdout stream (`pino/file` targeting fd 1) so `docker logs`/`podman
   logs` keep working exactly as before.
 - **Purge sweep, resolved**: `app/lib/logRetention.js`'s `schedulePurge()` runs an
   hourly `setInterval` inside each of the three long-running processes themselves
-  (called once from `app.js`, `worker.js`, and `specDocWorker.js`) rather than a
+  (called once from `app.js`, `worker.js`, and `docWorker.js`) rather than a
   standalone script — all three already run forever, and a redundant sweep from more
   than one process is harmless (deleting an already-purged file is a no-op). Reads
   `LOG_RETENTION_DAYS` (default **3**) and deletes any file under `logs/` whose mtime
@@ -566,10 +566,10 @@ Open / undecided for this phase:
   for the decision to close this gap with a `runId` field once a multi-attempt session
   actually needs it.
 - **`createLogger(name)` caches one pino instance per name**, not a fresh one per
-  call: `specDocService.js`'s one remaining stray `console.error` (a job-failure log
+  call: `docService.js`'s one remaining stray `console.error` (a job-failure log
   inside `drainQueuedJobs`) also moved to the structured logger, under the same
-  `'spec-doc-worker'` name `specDocWorker.js` uses. Two independent `pino-roll`
-  transports targeting the same `logs/spec-doc-worker.log` would each track their own
+  `'doc-worker'` name `docWorker.js` uses. Two independent `pino-roll`
+  transports targeting the same `logs/doc-worker.log` would each track their own
   rolling-file-index state and race each other, so same-name callers must share one
   underlying instance rather than each constructing their own.
 - **`pipelineRunner.js` builds one child logger per session** (`sessionId`, `repoId`,
@@ -578,16 +578,16 @@ Open / undecided for this phase:
   to its existing `pipeline_runs.stage` write) and `finishSuccessfully()`. This piggybacks
   on the exact same call sites Phase 9's stepper already uses to track stage, rather
   than adding a parallel set of logging calls.
-- **No extra bind mount needed for `logs/`**: the app/worker/spec-doc-worker
+- **No extra bind mount needed for `logs/`**: the app/worker/doc-worker
   containers already bind-mount the full repo (`-v "$(CURDIR)":/app"`, see Makefile),
   so a file written to `logs/<name>.log` from inside any of them lands directly in the
   repo's own `logs/` directory on the host, survives container recreation, and is
   `grep`-able without `docker exec`/`docker logs` — matching the Phase 10 admin-API
   precedent of reusing what's already there instead of adding new plumbing.
 - **Docker-level rotation flags land on exactly the three app-level Makefile
-  targets** (`dev`, `worker`, `spec-doc-worker`) — `db-up`'s `apex-mariadb` container
+  targets** (`dev`, `worker`, `doc-worker`) — `db-up`'s `apex-mariadb` container
   is unaffected, consistent with the roadmap's explicit `apex-app`/`apex-worker`/
-  `apex-spec-doc-worker` scope and MariaDB's own logging being a separate concern.
+  `apex-doc-worker` scope and MariaDB's own logging being a separate concern.
 
 ## Phase 13 — Branch page requirements-log panel & branch lifecycle management
 
@@ -715,7 +715,7 @@ Not in notes.md's original scope.
   bare string, so token usage (currently parsed off NIM's response and discarded, even
   though the API already returns it) is captured for every call site
   (`overlapService.js`, `clarificationService.js`, `codegenService.js`,
-  `specDocService.js`) instead of just this one.
+  `docService.js`) instead of just this one.
 - **New `usage_events` table**, append-only, one row per model call: timestamp,
   call_site, session/org/repo attribution, provider, model, input_tokens,
   output_tokens, cache tokens (for providers that report them), and `cost_usd` computed
@@ -740,7 +740,7 @@ Not in notes.md's original scope.
   called it. This matters because clarification/overlap calls from Phase 5 are not
   serialized — several can be in flight across different users at once.
   - **State must be DB-backed, not in-memory**: the model adapter is called from three
-    separate processes (`app.js`, `worker.js`, `specDocWorker.js` — see Phase 12), none
+    separate processes (`app.js`, `worker.js`, `docWorker.js` — see Phase 12), none
     of which share memory, so a per-process flag wouldn't be visible across all of them.
     Reuses MariaDB the same way `pipeline_locks`/`sessions` already coordinate
     cross-process state, consistent with this project's "no Redis" stance (see Stack
@@ -759,7 +759,7 @@ Open / undecided for this phase:
 - **`modelAdapter.generate(messages)` now returns `{text, usage, provider, model}`**
   instead of a bare string. Usage capture and cost attribution deliberately live at each
   of the four call sites (`overlapService.js`, `clarificationService.js`,
-  `codegenService.js`, `specDocService.js`), not inside `modelAdapter.js` itself —
+  `codegenService.js`, `docService.js`), not inside `modelAdapter.js` itself —
   `modelAdapter.js` only gates calls behind the circuit breaker, which is genuinely
   provider-level state, not something tied to any one call site's session/repo context.
   Each call site writes its own `usage_events` row right after a successful `generate()`
@@ -776,7 +776,7 @@ Open / undecided for this phase:
   `codegenService.runCodegen` gained a `sessionId` param threaded through
   `pipelineRunner.js`'s `codegenStep` — needed purely for usage-event attribution;
   neither function used `session` for any other purpose before this phase.
-  `specDocService.js` passes `sessionId: null` — repo-level doc regen has no session to
+  `docService.js` passes `sessionId: null` — repo-level doc regen has no session to
   attribute to, same as it has no CO.
 - **Circuit breaker lives in `app/lib/model/providerHealth.js`**, backed by a new
   `model_provider_health` table (one row per provider, upserted — existence isn't the
@@ -826,12 +826,12 @@ Open / undecided for this phase:
 ## Phase 15 — Spec/Communication Protocol doc regen: cron cadence
 
 Resolves the open question from Phase 8 / Open-future: the Spec/Communication Protocol
-doc regen job (`specDocWorker.js`) will run on a **nightly cron job, once every 24
+doc regen job (`docWorker.js`) will run on a **nightly cron job, once every 24
 hours** — not the 5-minute interval-loop default it ships with today.
 
 - **Interval:** nightly. Doc freshness bounded to once a day is acceptable — these are
   low-urgency Documents-page artifacts, not anything the AI pipeline depends on.
-- **Mechanism:** a nightly cadence changes the shape of `specDocWorker.js` itself, not
+- **Mechanism:** a nightly cadence changes the shape of `docWorker.js` itself, not
   just its config. The current `for (;;) { tick(); sleep(INTERVAL_MS); }` loop (see
   Phase 8) should become a one-shot script — run `scanForStaleRepos()` +
   `drainQueuedJobs()` once, then exit — invoked by whatever cron-like facility the
@@ -843,12 +843,12 @@ hours** — not the 5-minute interval-loop default it ships with today.
 - **Known side effects, not yet resolved:** `SPEC_DOC_SCAN_INTERVAL_MS` becomes
   obsolete; the Makefile's `nodemon`-based persistent run target (see Phase 8) needs
   rework for a one-shot invocation; `logRetention.js`'s `schedulePurge` hourly
-  `setInterval` (Phase 12) becomes moot once `specDocWorker.js` exits right after its
+  `setInterval` (Phase 12) becomes moot once `docWorker.js` exits right after its
   single tick — harmless, since the immediate `purgeOnce` call it also makes still runs
   once per nightly invocation, which is as often as the purge needs to run anyway.
 
 **Implementation notes (decisions made while building this phase):**
-- **`specDocWorker.js` is now a one-shot script**: `main()` runs
+- **`docWorker.js` is now a one-shot script**: `main()` runs
   `scanForStaleRepos()` + `drainQueuedJobs()` once, calls `logRetention.purgeOnce()`
   directly (not `schedulePurge()` — see below), then exits — `process.exit(0)` on
   success, `process.exit(1)` on an uncaught error from either step, so the invoking
@@ -858,31 +858,31 @@ hours** — not the 5-minute interval-loop default it ships with today.
 - **`SPEC_DOC_SCAN_INTERVAL_MS` removed from `.env.example`**, per the "known side
   effect" flagged when this phase was decided — nothing reads it anymore.
 - **`logRetention.js`'s `schedulePurge()` is no longer called from
-  `specDocWorker.js`** — it calls `purgeOnce()` directly instead. `schedulePurge()`
+  `docWorker.js`** — it calls `purgeOnce()` directly instead. `schedulePurge()`
   (immediate `purgeOnce` + hourly `setInterval`) still exists and is still used by
   `app.js`/`worker.js`, the two long-running processes where a repeat hourly sweep
   makes sense; a `setInterval` in a process that exits right after its single tick
   would just hold the event loop open for no reason. The immediate `purgeOnce` call
   `main()` makes is still exactly one purge per nightly invocation — as often as the
   purge needs to run, per the original decision.
-- **Makefile's `spec-doc-worker` target** dropped `-d`/`--name`/`npx nodemon` in favor
-  of a plain `docker run --rm ... node specDocWorker.js` — runs to completion and
+- **Makefile's `doc-worker` target** dropped `-d`/`--name`/`npx nodemon` in favor
+  of a plain `docker run --rm ... node docWorker.js` — runs to completion and
   removes itself, rather than staying up as a persistent container for nodemon to
   restart. `SPEC_DOC_WORKER_CONTAINER` and its `stop` target line were removed since
   there's no longer a persistent named container to `rm -f`. The `--log-opt
   max-size/max-file` flags (Phase 12) were also dropped from this target —
   irrelevant to a container that's gone within seconds of starting.
   **Mechanism still deliberately not wired up**: nothing in this repo actually
-  invokes `make spec-doc-worker` on a nightly cadence yet (no crontab entry,
+  invokes `make doc-worker` on a nightly cadence yet (no crontab entry,
   systemd timer, or CronJob manifest is checked in) — the deployment target that
   would host one of those is still undecided (see Stack decisions), and per this
   phase's original mechanism/deployment-target decoupling, that's fine: whoever
   sets up the eventual deployment target just needs to point its cron-equivalent at
-  `make spec-doc-worker` (or the equivalent `docker run` directly), nightly.
+  `make doc-worker` (or the equivalent `docker run` directly), nightly.
 - **Docs updated to match** (`README.md`, `SPEC.md`, `apex_troubleshooting.md`,
   `apex_nim_integration.md`, `docs/docker-usage.md`, plus comments in
-  `specDocScanService.js`/`logger.js`/`logRetention.js`) — anywhere that described
-  `apex-spec-doc-worker` as a persistent, interval-polling container now describes it
+  `docScanService.js`/`logger.js`/`logRetention.js`) — anywhere that described
+  `apex-doc-worker` as a persistent, interval-polling container now describes it
   as a one-shot nightly invocation instead.
 
 ## Phase 16 — Logging & Observability: runId correlation
@@ -1212,7 +1212,7 @@ until it can no longer silently destroy what it hasn't seen.
   file it believes is absent, so it must be refused by the same rule above, with the
   real reason reported.
 - **Shared constants:** `MAX_TREE_PATHS` (500) and `MAX_FILE_CHARS` (8000) are declared
-  three times over — `codegenService`, `clarificationService`, `specDocService` — along
+  three times over — `codegenService`, `clarificationService`, `docService` — along
   with an identical `'(tree unavailable)'` fallback string. They move to one module so a
   cap can't be fixed in one reader and left wrong in another. Not cosmetic: this phase's
   guard is only sound if every reader agrees on where truncation happens.
@@ -1297,7 +1297,7 @@ until it can no longer silently destroy what it hasn't seen.
   distinct. `pipelineConfig.fetchPipelineConfig` inherits this for free: a >1 MB
   `apex.pipeline.json` now fails with the real reason instead of "has no
   apex.pipeline.json".
-- **specDocService skips a non-`ok` read rather than describing the failure to the model**,
+- **docService skips a non-`ok` read rather than describing the failure to the model**,
   keeping that call site's existing degrade-don't-block posture — it has no turn loop to
   act on a refusal, and a doc is lower stakes than a write. A *clipped* key file is still
   included, labelled as clipped.
@@ -1346,9 +1346,9 @@ Open / undecided for this phase:
   `(repo_id, commit_sha)` caches the map so three callers in one session don't make
   three identical tree calls, and so a repo whose trunk hasn't moved doesn't get
   re-walked at all. Natural fit with Phase 15's existing staleness machinery —
-  `specDocScanService` already polls trunk SHAs and enqueues work on change, so map
+  `docScanService` already polls trunk SHAs and enqueues work on change, so map
   rebuild hangs off the same signal rather than inventing a second scanner.
-- **Consequence for Phase 15:** `specDocService.KEY_FILES` is a hardcoded
+- **Consequence for Phase 15:** `docService.KEY_FILES` is a hardcoded
   three-path allowlist (`README.md`, `package.json`, `apex.pipeline.json`), which is why
   the Spec/Communication Protocol doc for a large repo is thin — it's written from
   packaging metadata and a readme. With a size-aware map available, that selection can
@@ -1422,7 +1422,7 @@ Open / undecided for this phase:
   at all; clarification's no longer claims `<path>` must be "one path from the tree
   below", which stopped being true the moment the tree became a selection. A prompt that
   describes the old tree would have made the new one actively misleading.
-- **`specDocService.KEY_FILES` deliberately left hardcoded.** The map makes a map-driven
+- **`docService.KEY_FILES` deliberately left hardcoded.** The map makes a map-driven
   selection possible here, but it changes generated doc content, which is Phase 15's
   concern and wants its own before/after review. Noted in code at the constant.
 - **Not verified by execution.** The repo has no test runner and no Node runtime was
@@ -1725,13 +1725,13 @@ replayed whole by `make migrate`, there are no incremental migration files):
   The banner is suppressed on the maintenance page itself, where it would stack above a
   page already carrying the same message and would be worded backwards for the person
   being blocked.
-- **The lock reaches the workers, not just HTTP.** `worker.js` and `specDocWorker.js` are
+- **The lock reaches the workers, not just HTTP.** `worker.js` and `docWorker.js` are
   separate containers polling the same tables; locking the web tier alone would do
   nothing to them, and under the no-model lock the worker would claim every queued
   session and burn it through to `failed`. Both stop *claiming* new work; a session
   already running is left to finish rather than killed mid-pipeline with a half-written
   branch and a held CO lock. All three enforcement points **fail open** on a lock-read
-  error — a DB blip must not be indistinguishable from "locked" — and `specDocWorker`'s
+  error — a DB blip must not be indistinguishable from "locked" — and `docWorker`'s
   log retention still runs even when the scan and drain are skipped.
 - **Lock state is TTL-cached (30s), not write-invalidated.** The three processes share no
   memory, so an in-process invalidation on an admin write would never reach the other

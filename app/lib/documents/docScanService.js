@@ -1,6 +1,6 @@
 // Trunk-staleness scan for the Spec/Communication Protocol doc (see
 // ROADMAP.md Phase 8). Decoupled from worker.js's AI-pipeline poll loop -
-// driven by a nightly, one-shot cron invocation (see specDocWorker.js,
+// driven by a nightly, one-shot cron invocation (see docWorker.js,
 // ROADMAP.md Phase 15) so a backlog of queued AI sessions can't delay doc
 // regeneration, or vice versa.
 const db = require('../db');
@@ -18,7 +18,7 @@ async function scanForStaleRepos() {
   // it uses the admin-configured spec-doc model, falling back to the catalog
   // default when that is unset or no longer usable (see ROADMAP.md Phase 22).
   // Resolved once here and stamped on every job this scan enqueues, rather than
-  // read at drain time - see the note in specDocService.generateForRepo. With
+  // read at drain time - see the note in docService.generateForRepo. With
   // no enabled model there is nothing a queued job could ever run against, so
   // enqueueing one would only bank work that fails; the next nightly scan
   // re-finds the same stale repos once an admin has added a model.

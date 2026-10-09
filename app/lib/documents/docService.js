@@ -1,7 +1,7 @@
 // Generates the Spec/Communication Protocol doc: a repo-level (co_number=''
 // sentinel) document, fully regenerated each time trunk moves rather than
 // incrementally patched (see ROADMAP.md Phase 8). Drained by
-// specDocWorker.js, not worker.js - see specDocScanService.js for why.
+// docWorker.js, not worker.js - see docScanService.js for why.
 const db = require('../db');
 const modelAdapter = require('../model/modelAdapter');
 const usageService = require('../model/usageService');
@@ -57,7 +57,7 @@ async function generateForRepo(job) {
   );
   const org = { name: repo.org_name };
 
-  // job.model is stamped when the job is enqueued (see specDocScanService.js),
+  // job.model is stamped when the job is enqueued (see docScanService.js),
   // not resolved here: the nightly scan and the drain are separate runs, and a
   // job must generate with the model it was queued under even if the catalog's
   // default changed in between.

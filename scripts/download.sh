@@ -58,7 +58,7 @@ echo "# Finally #"
 echo "make dev"
 echo "make worker"
 echo ""
-echo "# add 'make spec-doc-worker' to cronjobs"
+echo "# add 'make doc-worker' to cronjobs"
 echo ""
 echo "(See README.md for details...)"
 

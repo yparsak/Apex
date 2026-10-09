@@ -3,7 +3,7 @@
 // Phase 8), organized internally by a heading per CO (see
 // requirementsLogFormat.js). Updated synchronously, inline, whenever a
 // session completes - no queue, no cron (contrast with the Spec/
-// Communication Protocol doc - see specDocService.js).
+// Communication Protocol doc - see docService.js).
 const db = require('../db');
 const { parseSections, renderSections } = require('./requirementsLogFormat');
 

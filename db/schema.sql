@@ -327,7 +327,7 @@ CREATE TABLE IF NOT EXISTS spec_doc_jobs (
 
 -- One row per model call, written by app/lib/model/usageService.js from each
 -- call site (overlapService.js, clarificationService.js, codegenService.js,
--- specDocService.js) right after a successful modelAdapter.generate() call -
+-- docService.js) right after a successful modelAdapter.generate() call -
 -- see ROADMAP.md Phase 14.
 CREATE TABLE IF NOT EXISTS usage_events (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -397,7 +397,7 @@ CREATE TABLE IF NOT EXISTS repo_file_maps (
   paths_json LONGTEXT NOT NULL,
   -- Touched on every cache hit. Retirement is by last use, not by whether the
   -- sha is still a branch head: the map for an in-flight DEV branch is exactly
-  -- the one worth keeping (see specDocScanService.js).
+  -- the one worth keeping (see docScanService.js).
   last_used_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),

@@ -1,8 +1,8 @@
 // Structured logging (see ROADMAP.md Phase 12), replacing the scattered
-// console.log/console.error calls app.js/worker.js/specDocWorker.js/
+// console.log/console.error calls app.js/worker.js/docWorker.js/
 // pipelineRunner.js used to make directly. One pino instance per process name
-// (app/worker/spec-doc-worker - "per-process log files", not one combined
-// stream; specDocWorker.js is a one-shot invocation as of Phase 15, not a
+// (app/worker/doc-worker - "per-process log files", not one combined
+// stream; docWorker.js is a one-shot invocation as of Phase 15, not a
 // long-running process like the other two, but still gets its own named log
 // file the same way), writing to two targets at once:
 //   - stdout, unchanged, so `docker logs`/`podman logs` keep working.
@@ -19,8 +19,8 @@ const LEVEL = process.env.LOG_LEVEL || 'info';
 // Cached per name: two independent pino-roll transports (each tracking its
 // own rolling-file-index state) writing to the same logs/<name>.log would
 // race each other. Modules that log under the same process name (e.g.
-// specDocWorker.js and specDocService.js, both 'spec-doc-worker') must share
-// one underlying pino instance, not create their own.
+// docWorker.js and docService.js, both 'doc-worker') must share one
+// underlying pino instance, not create their own.
 const cache = new Map();
 
 // The per-process-name invariant above only holds within one process - the
@@ -33,7 +33,7 @@ const cache = new Map();
 //
 // So the log file name is a property of the *process*, not of the module
 // doing the logging: entrypoints declare it once via initProcessLogger(), and
-// shared library modules (pipelineRunner.js, specDocService.js - both loaded
+// shared library modules (pipelineRunner.js, docService.js - both loaded
 // by app.js's route tree as well as by their own worker entrypoint) resolve
 // it lazily through processLogger() instead of naming a file themselves.
 let processName = null;
@@ -77,7 +77,7 @@ function createLogger(name) {
   return logger;
 }
 
-// Called once by each entrypoint (app.js/worker.js/specDocWorker.js) to fix
+// Called once by each entrypoint (app.js/worker.js/docWorker.js) to fix
 // the name every log file this process writes is derived from.
 function initProcessLogger(name) {
   processName = name;

@@ -1,6 +1,6 @@
 // DB-backed model circuit breaker (see ROADMAP.md Phase 14). State must live in
 // MariaDB, not a per-process in-memory flag: modelAdapter.js is called from
-// three separate processes (app.js, worker.js, specDocWorker.js - see Phase
+// three separate processes (app.js, worker.js, docWorker.js - see Phase
 // 12), none of which share memory - consistent with this project's "no Redis"
 // stance (see ROADMAP.md Stack decisions).
 //

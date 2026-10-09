@@ -6,7 +6,7 @@
 // Decided (was open in ROADMAP.md): runs from a setInterval inside each of
 // app.js/worker.js, the two long-running processes, rather than a standalone
 // script, since both already run forever and a repeat sweep from each one is
-// harmless (deleting an already-gone file is a no-op). specDocWorker.js is a
+// harmless (deleting an already-gone file is a no-op). docWorker.js is a
 // one-shot script (see ROADMAP.md Phase 15), so it calls purgeOnce() directly
 // instead of schedulePurge() - a setInterval would just be dead weight on a
 // process that exits right after its single tick, and that tick is already

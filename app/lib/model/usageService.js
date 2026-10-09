@@ -1,7 +1,7 @@
 // Usage/cost reporting store (see ROADMAP.md Phase 14): one append-only
 // usage_events row per successful model call, written by each call site
 // (overlapService.js, clarificationService.js, codegenService.js,
-// specDocService.js) right after modelAdapter.generate() resolves, plus the
+// docService.js) right after modelAdapter.generate() resolves, plus the
 // query helpers behind the /admin/usage dashboard.
 const db = require('../db');
 const pricing = require('./pricing');

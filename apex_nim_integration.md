@@ -76,7 +76,7 @@ Which model gets stamped depends on who asked for the work:
 | Work | Model used |
 |---|---|
 | Clarification, overlap, codegen (`apex-worker`) | The requesting user's selection, stamped on the session when it was created. `/resume` reuses the failed run's own model. |
-| Spec/Communication Protocol docs (`specDocWorker.js`) | The **Spec document model** set on `/admin/models`; falls back to the catalog default when unset, or when the configured model has been disabled or deleted. |
+| Spec/Communication Protocol docs (`docWorker.js`) | The **Spec document model** set on `/admin/models`; falls back to the catalog default when unset, or when the configured model has been disabled or deleted. |
 
 ### Request/response handling
 
@@ -177,7 +177,7 @@ Further read outcomes are distinct rather than collapsed into "not found":
 All of this lives in one module, [app/lib/repoContext.js](app/lib/repoContext.js) —
 the caps, the tree fetch, the formatter, and since Phase 21 **the line model** — shared
 by every call site. `MAX_TREE_PATHS` and `MAX_FILE_CHARS` used to be declared separately
-in `codegenService`, `clarificationService`, and `specDocService`; the write guard below
+in `codegenService`, `clarificationService`, and `docService`; the write guard below
 is only sound if every reader agrees on exactly where truncation happens.
 
 The line model joined it for the same reason, one phase later: a ranged read hands the
@@ -224,7 +224,7 @@ ROADMAP.md Phase 20 replaced that with a **size-aware map**
 - **Cached per `(repo_id, commit_sha)`** in `repo_file_maps`, so the three callers in one
   session share one tree call and a repo whose trunk hasn't moved isn't re-walked. A moved
   sha simply misses the cache, so rebuild needs no invalidation step; rows unread for 14
-  days are retired by the nightly scanner (see `specDocScanService.js`). A cache the DB
+  days are retired by the nightly scanner (see `docScanService.js`). A cache the DB
   can't serve degrades to building the map live — it is a performance store, not a source
   of truth.
 
@@ -442,9 +442,9 @@ would be keyed under — a push landing between the two lookups would otherwise 
 commit's outline under that commit's key, which this run wouldn't notice but a later
 clarification would.
 
-### 4. Spec/Communication Protocol doc — [specDocService.js](app/lib/documents/specDocService.js)
+### 4. Spec/Communication Protocol doc — [docService.js](app/lib/documents/docService.js)
 
-Runs during `specDocWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
+Runs during `docWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
 Phase 15), once per repo whose trunk has moved. **The
 one call site where file selection is not model-driven**: there's no `FETCH_FILE` loop
 here at all. Instead, Apex pre-selects a small fixed allowlist —

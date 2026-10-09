@@ -31,7 +31,7 @@ Apex is three independent Node.js processes plus a database, each its own contai
 |---|---|---|
 | `apex-app` | [app.js](app.js) | Express + EJS web app. Auth, repo/branch browsing, the clarification UI, admin screens, document views. |
 | `apex-worker` | [worker.js](worker.js) | Polls `sessions` for `queued` rows, one at a time, and drives each one's full sandboxed pipeline (clone → codegen → build → test → push) via [pipelineRunner.js](app/lib/pipeline/pipelineRunner.js). |
-| `apex-spec-doc-worker` | [specDocWorker.js](specDocWorker.js) | One-shot script, invoked nightly by cron (`make spec-doc-worker`): scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc, retires `repo_file_maps` rows unread for 14 days, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
+| `apex-doc-worker` | [docWorker.js](docWorker.js) | One-shot script, invoked nightly by cron (`make doc-worker`): scans every repo for a moved trunk and regenerates its Spec/Communication Protocol doc, retires `repo_file_maps` rows unread for 14 days, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. |
 | `apex-mariadb` | — | MariaDB 11. The only shared state between the three processes above — there's no Redis, no message queue. Locks, job queues, and session state all live in ordinary tables (see [db/schema.sql](db/schema.sql)). |
 
 `apex-app` never touches Docker. Only `apex-worker` creates sandbox containers, and it
@@ -138,7 +138,7 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   whenever a session completes) or `spec_communication_protocol` (whole-repo summary,
   fully regenerated on a trunk-staleness cadence). Both doc types always use the
   `co_number=''` sentinel in practice — the column stays for schema generality.
-- `spec_doc_jobs` — the queue `specDocWorker.js` drains; one `queued` row per repo whose
+- `spec_doc_jobs` — the queue `docWorker.js` drains; one `queued` row per repo whose
   trunk has moved since `repos.spec_doc_synced_commit_sha`.
 
 **Repo structure**
@@ -280,7 +280,7 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 6. **Delivery.** The requirements log (cumulative, per-CO) is the durable record of
    what Apex implemented and when; it's updated synchronously on every successful
    session. The Spec/Communication Protocol doc is a separate, whole-repo summary,
-   regenerated from scratch by `apex-spec-doc-worker` whenever trunk moves — unrelated
+   regenerated from scratch by `apex-doc-worker` whenever trunk moves — unrelated
    to any specific CO, and never blocked by (or blocking) the AI-pipeline queue.
 
 7. **Branch lifecycle.** Branches can be explicitly deactivated (Active → Stale) or
@@ -314,10 +314,10 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 ## Observability
 
 - **Structured logs** (pino): one logger per process name (`app`/`worker`/
-  `spec-doc-worker`), each writing to stdout (so `docker logs`/`podman logs` keep
+  `doc-worker`), each writing to stdout (so `docker logs`/`podman logs` keep
   working) *and* a rotated file under `logs/<name>.log` (`pino-roll`, size + daily
   rotation), purged past `LOG_RETENTION_DAYS` (default 3) by an hourly sweep running
-  inside `app`/`worker` (the two long-running processes); `spec-doc-worker`, a
+  inside `app`/`worker` (the two long-running processes); `doc-worker`, a
   one-shot nightly invocation as of Phase 15, runs the same purge once per
   invocation instead. Independent of Docker's own `--log-opt max-size/max-file`
   container-log rotation. Pipeline log lines carry `sessionId`/`repoId`/`coNumber`/
