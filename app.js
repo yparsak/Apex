@@ -12,6 +12,7 @@ const reposRoutes = require('./app/routes/repos');
 const documentsRoutes = require('./app/routes/documents');
 const apiAdminRoutes = require('./app/routes/apiAdmin');
 const authProvider = require('./app/lib/auth/authProvider');
+const appLockGate = require('./app/middleware/appLockGate');
 const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
 
@@ -63,6 +64,11 @@ app.use((req, res, next) => {
   res.locals.managesPasswordsLocally = authProvider.managesPasswordsLocally;
   next();
 });
+
+// Must sit after the session middleware (it needs req.session.user.isAdmin to
+// decide who passes through) and ahead of every route, so a locked app can't
+// mutate anything - see ROADMAP.md Phase 22.
+app.use(appLockGate);
 
 app.use(authRoutes);
 app.use(accountRoutes);

@@ -33,26 +33,33 @@
       </div>
     </div>
 
-    <h2>Model provider health</h2>
+    <h2>Model health</h2>
     <p class="placeholder">
-      Checked by the model adapter before every call - a locked provider fails fast instead of
-      every in-flight call failing individually. Recovery is manual only; there's no auto-expiry.
+      Checked by the model adapter before every call - a locked model fails fast instead of
+      every in-flight call failing individually. Tracked per model, so one exhausted model
+      doesn't lock out the others on the same provider. Recovery is manual only; there's no
+      auto-expiry.
     </p>
     <% if (!providers.length) { %>
-      <p class="placeholder">No provider has recorded a status yet - all providers are assumed healthy.</p>
+      <p class="placeholder">No model has recorded a status yet - all models are assumed healthy.</p>
     <% } else { %>
       <table class="admin-table">
-        <thead><tr><th>Provider</th><th>Status</th><th>Reason</th><th>Locked since</th><th></th></tr></thead>
+        <thead><tr><th>Provider</th><th>Model</th><th>Status</th><th>Reason</th><th>Locked since</th><th></th></tr></thead>
         <tbody>
           <% providers.forEach(function(p) { %>
           <tr>
             <td><%= p.provider %></td>
+            <%# An empty model means a provider-wide lock (see
+                providerHealth.PROVIDER_WIDE) - it blocks every model on that
+                provider, so it must not read as a missing value. %>
+            <td><%= p.model === '' ? 'all models' : p.model %></td>
             <td><span class="health-badge health-<%= p.status %>"><%= p.status %></span></td>
             <td><%= p.reason || '—' %></td>
             <td><%= p.locked_at ? p.locked_at.toISOString().slice(0, 16).replace('T', ' ') : '—' %></td>
             <td>
               <% if (p.status === 'locked') { %>
               <form method="POST" action="/admin/usage/providers/<%= p.provider %>/clear-lock" class="row-form">
+                <input type="hidden" name="model" value="<%= p.model %>">
                 <button type="submit" class="danger-button">Clear lock</button>
               </form>
               <% } %>

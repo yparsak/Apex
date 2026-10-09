@@ -528,3 +528,45 @@ body {
   background: #fef2f2;
   border: 1px solid #fecaca;
 }
+
+/* App-wide lock banner (see ROADMAP.md Phase 22). Only ever rendered for
+   someone the gate let through a locked app - an admin, or anyone on /login -
+   so it reads as a warning about what everyone else is seeing, not as the
+   maintenance notice itself. */
+.app-lock-banner {
+  padding: 0.6rem 1.5rem;
+  color: #b91c1c;
+  background: #fef2f2;
+  border-bottom: 1px solid #fecaca;
+  font-size: 0.9rem;
+}
+
+.app-lock-banner a {
+  color: #b91c1c;
+  margin-left: 0.5rem;
+}
+
+.maintenance-page {
+  max-width: 480px;
+  margin: 4rem auto;
+  padding: 0 1rem;
+  text-align: center;
+}
+
+.maintenance-message {
+  font-size: 1.1rem;
+  margin: 1rem 0;
+}
+
+/* The model picker on the repo list - a one-control form, so it sits inline
+   with the repo-group selector rather than reading as a settings page. */
+.model-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.model-picker select {
+  max-width: 24rem;
+}

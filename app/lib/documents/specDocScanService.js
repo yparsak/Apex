@@ -6,6 +6,7 @@
 const db = require('../db');
 const githubApi = require('../github/githubApi');
 const repoMap = require('../repoMap');
+const modelCatalog = require('../model/modelCatalog');
 const { processLogger } = require('../logger');
 
 // scanForStaleRepos() - for every repo, compares its default branch's
@@ -13,6 +14,28 @@ const { processLogger } = require('../logger');
 // as stale - no doc has ever been generated). Enqueues a spec_doc_jobs row
 // only if trunk actually moved and no queued/running job already covers it.
 async function scanForStaleRepos() {
+  // Spec-doc regen is repo-level with no requesting user to attribute it to, so
+  // it uses the admin-configured spec-doc model, falling back to the catalog
+  // default when that is unset or no longer usable (see ROADMAP.md Phase 22).
+  // Resolved once here and stamped on every job this scan enqueues, rather than
+  // read at drain time - see the note in specDocService.generateForRepo. With
+  // no enabled model there is nothing a queued job could ever run against, so
+  // enqueueing one would only bank work that fails; the next nightly scan
+  // re-finds the same stale repos once an admin has added a model.
+  const { model, usedFallback } = await modelCatalog.resolveForSpecDocs();
+  if (!model) {
+    processLogger().warn('spec-doc scan skipped: no enabled model in the catalog');
+    return;
+  }
+  if (usedFallback) {
+    // Worth a line: the admin picked a model for this job and is silently not
+    // getting it, which is otherwise only visible on the admin screen.
+    processLogger().warn(
+      { model: model.model_id },
+      'configured spec-doc model is missing or disabled - falling back to the catalog default'
+    );
+  }
+
   const [repos] = await db.query(
     `SELECT r.id, r.name, r.default_branch_name, r.spec_doc_synced_commit_sha, o.name AS org_name
      FROM repos r
@@ -38,10 +61,11 @@ async function scanForStaleRepos() {
     );
     if (pending) continue; // already covered by an in-flight job
 
-    await db.query('INSERT INTO spec_doc_jobs (repo_id, status, trunk_commit_sha) VALUES (?, ?, ?)', [
+    await db.query('INSERT INTO spec_doc_jobs (repo_id, status, trunk_commit_sha, model) VALUES (?, ?, ?, ?)', [
       repo.id,
       'queued',
       trunkSha,
+      model.model_id,
     ]);
   }
 

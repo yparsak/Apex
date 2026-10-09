@@ -5,6 +5,7 @@
 const db = require('../db');
 const modelAdapter = require('../model/modelAdapter');
 const usageService = require('../model/usageService');
+const modelCatalog = require('../model/modelCatalog');
 const repoContext = require('../repoContext');
 const { processLogger } = require('../logger');
 
@@ -56,11 +57,31 @@ async function generateForRepo(job) {
   );
   const org = { name: repo.org_name };
 
+  // job.model is stamped when the job is enqueued (see specDocScanService.js),
+  // not resolved here: the nightly scan and the drain are separate runs, and a
+  // job must generate with the model it was queued under even if the catalog's
+  // default changed in between.
+  //
+  // The fallback covers jobs enqueued before Phase 22 added this column, which
+  // are NULL with nothing to backfill them from. Resolved BEFORE buildContext so
+  // an unrunnable job fails without first paying for the GitHub tree fetch and
+  // key-file reads. (pipelineRunner.resume has the same kind of fallback for the
+  // same reason.)
+  let model = job.model;
+  if (!model) {
+    const fallback = await modelCatalog.resolveDefault();
+    if (!fallback) throw new Error('No enabled model is available to generate this document.');
+    model = fallback.model_id;
+  }
+
   const context = await buildContext(org, repo, repo.default_branch_name);
-  const result = await modelAdapter.generate([
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: context },
-  ]);
+  const result = await modelAdapter.generate(
+    [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: context },
+    ],
+    { model }
+  );
   const content = result.text;
   // Repo-level doc regen has no session to attribute to (see ROADMAP.md
   // Phase 8) - sessionId is null, same as every other repo-wide, not
@@ -73,6 +94,7 @@ async function generateForRepo(job) {
       provider: result.provider,
       model: result.model,
       usage: result.usage,
+      price: result.price,
     })
     .catch(() => {});
 

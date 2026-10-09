@@ -5,6 +5,7 @@ const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
 const authProvider = require('../lib/auth/authProvider');
 const { updatePassword } = require('../lib/userService');
+const modelCatalog = require('../lib/model/modelCatalog');
 
 const router = express.Router();
 
@@ -41,6 +42,29 @@ router.post('/account/password', requireAuth, async (req, res) => {
 
   await updatePassword(req.session.user.id, newPassword);
   renderForm(req, res, { success: true });
+});
+
+// Sticky model preference (see ROADMAP.md Phase 22), set from the picker on
+// the repo list. Validated against the *enabled* catalog rather than trusted
+// from the form: the id arrives from a client-side select, and a stale page
+// could post a model an admin has since disabled.
+//
+// Storing a preference has no effect on work already created - each session
+// carries the model it was stamped with (see app/lib/sessionService.js).
+router.post('/account/model', requireAuth, async (req, res) => {
+  const modelId = Number(req.body.model_id);
+  const model = modelId ? await modelCatalog.getById(modelId) : null;
+
+  if (model && model.enabled) {
+    await modelCatalog.setPreferredForUser(req.session.user.id, model.id);
+  }
+
+  // The picker lives on the repo list, which scopes its repo table by ?group=
+  // (see app/routes/home.js). Redirecting to a bare '/' would silently throw
+  // the user back to their first repo group every time they changed model,
+  // since the dropdown auto-submits on change.
+  const group = Number(req.body.group);
+  res.redirect(group ? `/?group=${group}` : '/');
 });
 
 module.exports = router;

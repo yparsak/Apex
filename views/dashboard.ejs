@@ -1,6 +1,29 @@
 <%- include('partials/head', { title: 'Dashboard', user: user }) %>
   <aside class="sidebar"></aside>
   <main class="content">
+    <%# Sticky per-user choice, not a per-submission one: it is saved on change
+        and then stamped onto each session at the moment that session is
+        created (see app/lib/sessionService.js). Changing it here never affects
+        work already queued or running. %>
+    <% if (models.length) { %>
+      <form method="POST" action="/account/model" class="model-picker">
+        <%# Carries the current repo-group scope through the redirect, so
+            changing model doesn't bounce the user back to their first group. %>
+        <% if (selectedGroup) { %><input type="hidden" name="group" value="<%= selectedGroup.id %>"><% } %>
+        <label for="model-select">Model</label>
+        <select id="model-select" name="model_id" onchange="this.form.submit()">
+          <% models.forEach(function(m) { %>
+            <option value="<%= m.id %>" title="<%= m.description || '' %>"
+              <%= selectedModelId === m.id ? 'selected' : '' %>><%= m.display_name %></option>
+          <% }) %>
+        </select>
+        <noscript><button type="submit">Save</button></noscript>
+        <% var selected = models.find(function(m) { return m.id === selectedModelId; }); %>
+        <% if (selected && selected.description) { %>
+          <span class="placeholder"><%= selected.description %></span>
+        <% } %>
+      </form>
+    <% } %>
     <% if (!repoGroups.length) { %>
       <p class="placeholder">You don't have access to any repo groups yet. Contact an admin.</p>
     <% } else { %>

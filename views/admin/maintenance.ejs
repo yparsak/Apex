@@ -1,0 +1,45 @@
+<%- include('../partials/head', { title: 'Admin - Maintenance', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'maintenance' }) %>
+    <h1>Maintenance</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+    <% if (saved) { %><p class="placeholder">Saved.</p><% } %>
+
+    <p class="placeholder">
+      Locking the app shows every non-admin user a maintenance page instead of the site, and
+      stops the pipeline worker claiming new sessions. Work already running is left to finish
+      rather than being killed mid-pipeline. Admins keep full access.
+    </p>
+
+    <form method="POST" action="/admin/maintenance" class="stacked-form">
+      <%# No companion hidden input: an unchecked box simply omits `locked` from
+          the body, which the route reads as false. Pairing it with a hidden
+          field would submit both values and arrive as an array. %>
+      <label>
+        <input type="checkbox" name="locked" value="true" <%= state.maintenanceLocked ? 'checked' : '' %>>
+        Lock the app for maintenance
+      </label>
+      <label>Message shown to users
+        <textarea name="message" rows="3" maxlength="1000"
+          placeholder="<%= state.defaultMaintenanceMessage %>"><%= state.maintenanceMessage %></textarea>
+      </label>
+      <button type="submit">Save</button>
+    </form>
+
+    <h2>Model availability</h2>
+    <p class="placeholder">
+      Derived from the catalog on <a href="/admin/models">Models</a>, not a setting - with no
+      enabled model there is nothing Apex could run, so the app locks itself. Add or enable a
+      model to clear it.
+    </p>
+    <% if (state.noModel) { %>
+      <p class="error">
+        Locked: <%= state.noModelMessage %>
+      </p>
+    <% } else { %>
+      <p class="placeholder">
+        <%= state.enabledModelCount %> model<%= state.enabledModelCount === 1 ? '' : 's' %> enabled - not locked.
+      </p>
+    <% } %>
+  </main>
+<%- include('../partials/foot') %>

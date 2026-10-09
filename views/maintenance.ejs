@@ -1,0 +1,15 @@
+<%- include('partials/head', { title: 'Maintenance', user: user }) %>
+  <main class="maintenance-page">
+    <h1>The site is under maintenance</h1>
+    <p class="maintenance-message"><%= lock.message %></p>
+    <% if (lock.reason === 'no_model') { %>
+      <p class="placeholder">
+        Apex cannot generate anything until an administrator adds and enables a model.
+      </p>
+    <% } else { %>
+      <p class="placeholder">
+        Work already in progress is not lost - queued sessions resume once maintenance ends.
+      </p>
+    <% } %>
+  </main>
+<%- include('partials/foot') %>

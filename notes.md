@@ -67,10 +67,14 @@ continue, or requests the next available branch name to start new work.
   pipeline (clone → sandbox build/test → push), not just the push. A push-only lock would
   let two sandboxes build against stale state and race.
 - **Model backend:** pluggable via `app/lib/model/modelAdapter.js`. Currently NVIDIA
-  NIM (`moonshotai/kimi-k3`), config-only via `MODEL`/`NVIDIA_BASE_URL`/
-  `MODEL_MAX_TOKENS`. The adapter retries on blank/degenerate model replies and falls
-  back to a `reasoning_content` field when the model returns one instead of `content`
-  — see "In progress" below for the current reliability work on this adapter.
+  NIM, with endpoint credentials from `NVIDIA_BASE_URL`/`NVIDIA_API_KEY`. Which models
+  are available is **not** env config: they are admin-managed rows in `models`
+  (`/admin/models`), each with its own `max_tokens` and pricing, and users pick one on
+  the repo list. The chosen model is stamped onto the session/run at creation, never
+  re-resolved later. With no enabled model the app locks itself rather than failing at
+  call time. The adapter retries on blank/degenerate model replies and falls back to a
+  `reasoning_content` field when the model returns one instead of `content` — see "In
+  progress" below for the current reliability work on this adapter.
 - **Sandbox execution:** ephemeral container, declarative per-repo `apex.pipeline.json`
   (`buildCommand`/`testCommand`/`image`) at the repo root — the runner never invents a
   default command. Clone uses a scoped, clone-only token; the write-capable token never

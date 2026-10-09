@@ -1,10 +1,19 @@
 // NVIDIA NIM implementation of the modelAdapter contract (see modelAdapter.js).
-// Config-only via MODEL / NVIDIA_BASE_URL / NVIDIA_API_KEY / MODEL_MAX_TOKENS.
+// Endpoint credentials come from the environment (NVIDIA_BASE_URL /
+// NVIDIA_API_KEY) because they are secrets; which model to call does not, and
+// arrives per call.
+//
+// MODEL and MODEL_MAX_TOKENS used to be read here - MODEL at require time,
+// which froze one model per process for the life of the process (see ROADMAP.md
+// Phase 22). Both are now per-call, sourced from the admin-managed catalog in
+// modelCatalog.js. There is deliberately no env fallback: a missing model is a
+// programming error at this depth, not something to paper over with a default,
+// because the catalog's own empty case is already handled far upstream by
+// appLock.js before any work is ever queued.
 const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 500;
 
 const PROVIDER_NAME = 'nvidia_nim';
-const MODEL_NAME = process.env.MODEL;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -25,8 +34,7 @@ function sleep(ms) {
 // was indistinguishable from a complete one - so codegen would write a file
 // body ending mid-function verbatim over the real file. A cut-off reply is a
 // failed turn, never a result.
-async function callOnce(messages) {
-  const maxTokens = Number(process.env.MODEL_MAX_TOKENS || 4096);
+async function callOnce(messages, { model, maxTokens }) {
   const response = await fetch(`${process.env.NVIDIA_BASE_URL}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -34,7 +42,7 @@ async function callOnce(messages) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: process.env.MODEL,
+      model,
       messages,
       max_tokens: maxTokens,
     }),
@@ -66,7 +74,7 @@ async function callOnce(messages) {
 
   if (choice.finish_reason === 'length') {
     const err = new Error(
-      `NVIDIA NIM stopped generating at the max_tokens limit (MODEL_MAX_TOKENS=${maxTokens}, ${usage.outputTokens} output tokens) - the reply was cut off mid-output and has been discarded rather than used. Raise MODEL_MAX_TOKENS if the work legitimately needs a longer reply.`
+      `NVIDIA NIM stopped generating at the max_tokens limit (model "${model}", max_tokens=${maxTokens}, ${usage.outputTokens} output tokens) - the reply was cut off mid-output and has been discarded rather than used. Raise this model's Max Tokens on /admin/models if the work legitimately needs a longer reply.`
     );
     err.finishReason = 'length';
     throw err;
@@ -89,22 +97,36 @@ function isRetryable(err) {
   return err.httpStatus >= 500; // every other 4xx is the request's own fault
 }
 
-// generate(messages) -> Promise<{text, usage}>. Resolves with non-blank text
-// or rejects - never resolves with a blank/null value, and never with a reply
-// the provider cut short. Transient transport failures (network errors, 5xx,
-// 408) and content failures (blank reply after exhausting the
-// content/reasoning_content fallback) share the MAX_ATTEMPTS retry budget with
-// exponential backoff; a request-shaped failure (any other 4xx, or a
+// generate(messages, {model, maxTokens}) -> Promise<{text, usage}>. Resolves
+// with non-blank text or rejects - never resolves with a blank/null value, and
+// never with a reply the provider cut short. Transient transport failures
+// (network errors, 5xx, 408) and content failures (blank reply after exhausting
+// the content/reasoning_content fallback) share the MAX_ATTEMPTS retry budget
+// with exponential backoff; a request-shaped failure (any other 4xx, or a
 // max_tokens cutoff) fails fast on the first attempt, since retrying the same
 // `messages` can only reproduce it. Whichever failure mode ended the loop is
 // what gets thrown, so a transport error is never misreported as "no usable
 // content" or vice versa.
-async function generate(messages) {
+//
+// `model` is required and unvalidated against the catalog here - this adapter
+// takes whatever string the caller resolved, exactly as it took whatever string
+// MODEL held before. maxTokens falls back to the same 4096 the old
+// MODEL_MAX_TOKENS default used, for a catalog row that predates a max_tokens
+// value or a stamped model whose catalog row has since been deleted.
+async function generate(messages, { model, maxTokens } = {}) {
+  if (!model) {
+    throw new Error(
+      'nvidiaNimAdapter.generate requires a model - no model was resolved for this call. ' +
+        'Models are managed on /admin/models; this is a bug if the app was reachable at all, ' +
+        'since an empty catalog locks the app upstream (see app/lib/appLock.js).'
+    );
+  }
+  const effectiveMaxTokens = Number(maxTokens) || 4096;
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await callOnce(messages);
+      const result = await callOnce(messages, { model, maxTokens: effectiveMaxTokens });
       if (result.text) return result;
       // No httpStatus, so isRetryable() treats this as transient - a blank
       // reply from a healthy endpoint genuinely can differ next attempt.
@@ -124,4 +146,4 @@ async function generate(messages) {
   throw lastError;
 }
 
-module.exports = { generate, PROVIDER_NAME, MODEL_NAME };
+module.exports = { generate, PROVIDER_NAME };

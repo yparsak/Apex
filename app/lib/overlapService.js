@@ -90,7 +90,15 @@ async function checkOverlap({ org, repo, branch, newRequirementText, session }) 
 
   let raw;
   try {
-    const result = await modelAdapter.generate([{ role: 'user', content: prompt }]);
+    // The session's stamped model (see db/schema.sql Phase 22), not a
+    // separately-resolved one: an overlap check reasons about the same branch
+    // the codegen run will act on, so it should reason with the same model. A
+    // session with no stamp throws in the adapter and lands in the catch below,
+    // which is the same "don't block the clarification loop" outcome every
+    // other failure here gets.
+    const result = await modelAdapter.generate([{ role: 'user', content: prompt }], {
+      model: session ? session.model : null,
+    });
     raw = result.text;
     // Best-effort: a usage-logging failure must never block the
     // clarification loop, same spirit as the model-failure catch below.
@@ -102,6 +110,7 @@ async function checkOverlap({ org, repo, branch, newRequirementText, session }) 
         provider: result.provider,
         model: result.model,
         usage: result.usage,
+        price: result.price,
       })
       .catch(() => {});
   } catch (err) {

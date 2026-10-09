@@ -1621,6 +1621,192 @@ Open / undecided for this phase:
   measured. Comfortably larger than a single edit needs, comfortably smaller than
   restating a file — the property that matters — but nothing has pushed on them yet.
 
+## Phase 22 — Multi-model catalog & app-wide maintenance lock
+
+Replaces the single `MODEL` env var with an admin-managed catalog users can choose from,
+and gives the app a first-class "unavailable" state so an empty catalog is a message
+rather than a crash. Touches every layer: schema, the adapter seam, all four model call
+sites, both workers, the request pipeline, and four admin/user screens.
+
+### Data model
+
+New tables, and columns added to existing ones (all idempotent — `db/schema.sql` is
+replayed whole by `make migrate`, there are no incremental migration files):
+
+| Object | Purpose |
+|---|---|
+| `models` | The catalog. `model_id` (the provider's own string, UNIQUE), `display_name`, `description`, `provider`, `max_tokens`, `price_in_per_1m`, `price_out_per_1m`, `enabled`, `is_default`. **Ships empty.** |
+| `app_settings` | Generic key/value. Keys: `maintenance_locked`, `maintenance_message`, `spec_doc_model_id`. |
+| `users.preferred_model_id` | FK → `models.id`, `ON DELETE SET NULL`. The sticky per-user choice. |
+| `sessions.model`, `pipeline_runs.model`, `spec_doc_jobs.model` | The stamped model id. Plain VARCHARs, deliberately not FKs. |
+| `model_provider_health` PK | Re-keyed from `(provider)` to `(provider, model)`. |
+
+### Design
+
+- **`MODEL` and `MODEL_MAX_TOKENS` are gone.** `MODEL` was read at require time in
+  `nvidiaNimAdapter.js`, which froze one model per process for the life of the process.
+  Both are now per-model catalog columns — context windows differ per model, so one
+  global `MODEL_MAX_TOKENS` was wrong for every model but one. Endpoint credentials
+  (`NVIDIA_BASE_URL` / `NVIDIA_API_KEY`) stay in the environment, because they are
+  secrets and don't belong in a table an admin edits through a browser.
+- **No seed row, no env fallback.** The catalog ships empty deliberately. A fallback
+  would mean two sources of truth for "which model runs" forever, and would hide a
+  misconfigured catalog behind whatever `MODEL` happened to be in `.env`. The cost is
+  that a fresh install is locked until an admin acts — which is the point: it makes the
+  no-model path a normal, exercised state rather than one nobody sees until the first
+  `generate()` call.
+- **Selection is a sticky per-user preference**, set on the repo list, resolved
+  (preference → catalog default → any enabled → none) at work-creation time only, and
+  **stamped** onto the unit of work. Stamping is load-bearing: `worker.js` picks a
+  session up in a different process minutes later, so resolving at `generate()` time
+  would let a user switch models between pipeline turns by changing a dropdown mid-run.
+  `/resume` reuses the failed run's own model for the same reason — otherwise one
+  model's partial output gets stitched to another's continuation. `/retry` *does*
+  re-stamp, because it reuses nothing from the failed attempt. `findOrCreateSession`
+  re-stamps a reused session while it is `awaiting_approval`/`failed`, or the reuse
+  would silently defeat the selector.
+- **Spec-doc generation has its own model setting**, since it is the one model call with
+  no requesting user to inherit a preference from: it runs unattended, nightly, across
+  every repo whose trunk moved. Pinning it to the catalog default would force one choice
+  for both unattended doc writing and interactive codegen, so it is configured separately
+  on `/admin/models` and falls back to the default when unset. The pointer lives in
+  `app_settings`, which can carry no FK, so it is re-validated on every read: a
+  configured model since disabled or deleted falls back rather than failing, and both the
+  admin screen and the scan log say the fallback is in effect rather than passing it off
+  as the choice.
+- **The stamp columns are plain VARCHARs, not FKs.** A run's record of what generated it
+  has to survive the catalog row being disabled, renamed, or deleted — same reasoning as
+  `usage_events.model` in Phase 14. The cost is that the database won't raise
+  `ER_ROW_IS_REFERENCED_2`, so `modelCatalog.countReferences` is the hand-rolled
+  stand-in: unfinished work blocks a delete *or a `model_id` rename*, completed history
+  blocks neither. "Unfinished" means any session that is not `completed` — not just
+  queued/running — because `awaiting_approval` is the default state of all not-yet-
+  approved work and a `failed` session still has a live Retry button.
+- **"Every session has a model" is an invariant, not a convention.** `createSession`
+  throws `NoModelAvailableError` rather than storing NULL, `findOrCreateSession` never
+  overwrites a valid stamp with NULL, `/retry` re-stamps, and `pipelineRunner.run`
+  rejects a stamp-less session *before* booting a container. The lock alone is not
+  sufficient to guarantee this — it exempts admins, fails open on a DB error, and is
+  briefly stale — and a NULL stamp written through any of those gaps fails every attempt
+  forever, deep in the pipeline, after a container boot and clone.
+- **Pricing actually works now.** Phase 14's `PRICING` map was never populated, so
+  `computeCost` returned 0 for every call and every `cost_usd` ever written was $0,
+  including on the usage dashboard. Rates moved onto the catalog row, which is also the
+  only way a per-deployment price could ever have been right: the same NIM model is free
+  self-hosted and metered elsewhere. `generate()` returns the rate it already read, so
+  `recordUsage` doesn't re-query the same immutable row once per turn.
+- **The circuit breaker is re-keyed on `(provider, model)`.** Keyed on provider alone it
+  was equivalent while one deployment meant one model; with several models behind the
+  same NIM endpoint, one bad model id would lock out every other model on that provider.
+  The migration backfills existing rows with `model = ''`, which app code reads as
+  *provider-wide* (`providerHealth.PROVIDER_WIDE`) rather than as a dead row — a provider
+  genuinely locked on quota at upgrade time has to keep blocking afterwards, and keying
+  the lookup on the narrower pair alone would have silently released it on the one
+  upgrade where it mattered.
+- **`provider` is validated against an adapter registry, not free text.** It keys the
+  breaker and usage attribution, so a value with no adapter behind it would file spend
+  and health under a provider that never served a call, and editing it on a locked model
+  would move the breaker key and release a live lock. `providerRegistry.js` is the single
+  map that both populates the admin form's `<select>` and resolves the adapter to
+  dispatch to, so the provider a row claims is always the adapter that actually ran —
+  `modelAdapter` previously hardcoded the NIM adapter regardless of the row. A second
+  provider (see "Non-NIM model provider" in `undecided_topics.md`) is now one entry here
+  plus its module, with no call-site change.
+- **Maintenance lock: two sources, one gate.** An explicit admin toggle with an
+  admin-authored message (`app_settings`), and a *derived* no-model condition computed
+  from the catalog — never stored, so it can't go stale or disagree with the thing it
+  describes. Explicit wins when both apply. Non-admins get HTTP 503 + `Retry-After` and a
+  maintenance page; a 200 would make a maintenance window invisible to any monitor or
+  proxy in front of the app.
+- **Admins and `/login` are exempt, by necessity.** If `/admin` were gated, the no-model
+  lock would be unrecoverable by construction — a fresh install has no models, so the
+  lock engages immediately and the only page that can add one sits behind it. Admins get
+  a banner instead, so a locked site is never invisible to the person who can change it.
+  The banner is suppressed on the maintenance page itself, where it would stack above a
+  page already carrying the same message and would be worded backwards for the person
+  being blocked.
+- **The lock reaches the workers, not just HTTP.** `worker.js` and `specDocWorker.js` are
+  separate containers polling the same tables; locking the web tier alone would do
+  nothing to them, and under the no-model lock the worker would claim every queued
+  session and burn it through to `failed`. Both stop *claiming* new work; a session
+  already running is left to finish rather than killed mid-pipeline with a half-written
+  branch and a held CO lock. All three enforcement points **fail open** on a lock-read
+  error — a DB blip must not be indistinguishable from "locked" — and `specDocWorker`'s
+  log retention still runs even when the scan and drain are skipped.
+- **Lock state is TTL-cached (30s), not write-invalidated.** The three processes share no
+  memory, so an in-process invalidation on an admin write would never reach the other
+  two. The TTL is deliberately well above `PIPELINE_POLL_INTERVAL_MS` (5000): at equal
+  values the inter-poll sleep always exceeded the TTL, so the cache could never hit in
+  the worker and an idle worker tripled its baseline query load forever.
+
+### Files
+
+Added: `app/lib/appLock.js`, `app/lib/appSettings.js`, `app/lib/model/modelCatalog.js`,
+`app/lib/model/providerRegistry.js`, `app/middleware/appLockGate.js`,
+`app/routes/admin/models.js`, `app/routes/admin/maintenance.js`,
+`views/admin/models.ejs`, `views/admin/maintenance.ejs`, `views/maintenance.ejs`.
+
+Changed, beyond the obvious: `modelAdapter`/`nvidiaNimAdapter` (model is a required
+per-call argument), `providerHealth` (every lookup and mutation is keyed by model;
+`listHealth` still returns all rows),
+`pricing`/`usageService` (`computeCost` is async and prefers a passed-through rate),
+`sessionService` (resolve-or-throw, re-stamp, `restampSession`), `pipelineRunner`
+(threads the model to codegen, stamps `pipeline_runs`, guards a stamp-less session), all
+four `generate()` call sites, both workers, `app.js` (gate mounted after the session
+middleware, before every route), and `views/partials/head.ejs` (lock banner).
+
+### Verification
+
+Driven against the running stack, not only unit-level: fresh empty catalog → 503 +
+`Retry-After` with the "No model available" message, admin bypass, model create/enable/
+disable/default/delete, preference persistence, the stamping rules (fresh, reuse while
+`awaiting_approval`, and *no* re-stamp while running), the maintenance toggle with a
+custom message, the worker observing the lock from its own process, spec-doc model
+resolution across all four states (unset / set / configured-then-disabled /
+configured-then-deleted), and `make migrate` idempotent on repeat runs.
+
+### Defects found by review and fixed before landing
+
+A high-effort review of the first working version found 18 real defects — recorded
+because several are the kind this phase's own design invited:
+
+- **NULL stamps were reachable and unrecoverable** through three separate gaps (admin
+  exemption, fail-open, cache staleness); `/retry` then failed identically forever while
+  `Continue` silently fixed it. This is what motivated making the invariant structural.
+- **The breaker re-key silently voided a live quota lock** on the one upgrade where it
+  mattered — fixed by giving `model = ''` the `PROVIDER_WIDE` meaning.
+- **Renaming a `model_id` orphaned stamps with no guard**, quietly dropping `max_tokens`
+  to 4096 and pricing to $0 — reintroducing, per-model, the exact bug this phase fixes.
+- **An XSS / broken-confirm** in the admin view: `<%= %>` escaping inside an inline JS
+  string meant a model named `Bob's Gemma` produced a `SyntaxError`, so Delete fired with
+  no confirmation, and `');` would have executed arbitrary JS.
+- **Pre-migration `queued` sessions and `spec_doc_jobs`** had no backfill and no guard.
+- The lock message **rendered twice** on the maintenance page — caught by driving the
+  app, not by reading the code.
+
+Open / undecided for this phase:
+
+- **No per-model access control.** Every user sees every enabled model. If some models
+  become materially more expensive than others, restricting them per repo-group is the
+  obvious next step.
+- **Cache-tier pricing has no catalog columns** — `usage_events` still records the token
+  counts, so adding them later is a schema change, not data loss.
+- **Deleting a model silently clears every user's preference** (FK `ON DELETE SET NULL`);
+  those users fall back to the default with no notification.
+- **A rejected model selection is silent.** `POST /account/model` ignores a model that is
+  disabled between page render and submit, and there is no way for a user to clear a
+  preference back to "follow the default" from the UI.
+- **The gate's JSON branch is currently unreachable.** `/api/admin` is the only `/api`
+  surface and it bypasses the gate, so the `/api/*` 503-as-JSON path is defensive code
+  for a non-admin API that does not exist yet.
+- **`BYPASS_PREFIXES` is a hand-maintained path list.** Only `/login` and `/logout` are
+  load-bearing (admins are already exempt by role), but an SSO callback route added under
+  Phase 17's pluggable `AUTH_PROVIDER` would need adding here or a fresh install could
+  not complete a login.
+- **No real model call has been made end to end.** Every path was exercised against the
+  live app and DB, but `.env` is absent from this working copy, so no actual NIM request
+  was issued with a catalog-resolved model.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

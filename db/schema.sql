@@ -433,6 +433,111 @@ ALTER TABLE repo_file_maps ADD COLUMN IF NOT EXISTS structural_index_json LONGTE
 ALTER TABLE repo_file_maps ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMP NULL DEFAULT NULL AFTER structural_index_json;
 
 -- ---------------------------------------------------------------------------
+-- Phase 22: admin-managed model catalog & app-wide maintenance lock
+-- ---------------------------------------------------------------------------
+
+-- Replaces the MODEL / MODEL_MAX_TOKENS env vars the NIM adapter used to read
+-- at require time, which allowed exactly one model per deployment. The catalog
+-- is admin-managed through /admin/models and ships EMPTY on purpose: there is
+-- no seed row and no env fallback, so a fresh install has no usable model and
+-- the app locks itself (see app_settings below and app/lib/appLock.js) until an
+-- admin adds one. That makes the "no model" path a normal, exercised state
+-- rather than a crash nobody sees until the first generate() call.
+--
+-- model_id is the provider's own string (e.g. 'google/gemma-4-31b-it') - the
+-- value sent in the chat-completions body and recorded in usage_events.model.
+-- max_tokens and the two price columns live per row because they are genuinely
+-- per-model: context windows differ, and the old global MODEL_MAX_TOKENS was
+-- wrong for every model but one. Pricing moved here from the hardcoded (and
+-- permanently empty, hence always-$0) PRICING map in app/lib/model/pricing.js.
+--
+-- Only one row may have is_default = TRUE; that is enforced app-side in
+-- modelCatalog.setDefault(), not by a unique index, since FALSE repeats.
+CREATE TABLE IF NOT EXISTS models (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  model_id VARCHAR(100) NOT NULL,
+  display_name VARCHAR(255) NOT NULL,
+  description TEXT NULL,
+  provider VARCHAR(50) NOT NULL DEFAULT 'nvidia_nim',
+  max_tokens INT UNSIGNED NOT NULL DEFAULT 4096,
+  price_in_per_1m DECIMAL(10, 4) NOT NULL DEFAULT 0,
+  price_out_per_1m DECIMAL(10, 4) NOT NULL DEFAULT 0,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_models_model_id (model_id),
+  KEY idx_models_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Generic app-wide settings, read and written through app/lib/appSettings.js.
+-- Key/value rather than a single-row table because this was the first app-wide
+-- setting and was not the last. Keys in use:
+--
+--   maintenance_locked  '1'/'0'  - the admin maintenance lock (app/lib/appLock.js)
+--   maintenance_message TEXT     - the message shown to locked-out users
+--   spec_doc_model_id   models.id as a string, or '' for "use the catalog
+--                                default" - which model generates Spec/
+--                                Communication Protocol docs, the one model
+--                                call with no requesting user to inherit a
+--                                preference from (app/lib/model/modelCatalog.js)
+--
+-- Note that setting_value cannot carry a foreign key, so spec_doc_model_id can
+-- dangle when the model it names is deleted; modelCatalog.resolveForSpecDocs
+-- re-validates it on every read and falls back rather than failing.
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key VARCHAR(100) NOT NULL,
+  setting_value TEXT NULL,
+  updated_by_user_id INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (setting_key),
+  CONSTRAINT fk_app_settings_user FOREIGN KEY (updated_by_user_id) REFERENCES users (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- A user's sticky model choice, set from the model selector on the repo list
+-- (views/dashboard.ejs). ON DELETE SET NULL rather than RESTRICT: deleting a
+-- model should not be blocked by someone merely having it selected, and
+-- modelCatalog.resolveForUser() already falls back to the default when a
+-- preference is missing or points at a disabled model.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_model_id INT UNSIGNED NULL AFTER is_admin;
+-- MariaDB puts IF NOT EXISTS after FOREIGN KEY, not after CONSTRAINT (unlike
+-- the ADD COLUMN form above) - the latter is a syntax error, not a no-op.
+ALTER TABLE users ADD CONSTRAINT fk_users_preferred_model
+  FOREIGN KEY IF NOT EXISTS (preferred_model_id) REFERENCES models (id) ON DELETE SET NULL;
+
+-- The model each unit of work was created with, stamped at creation time and
+-- never re-resolved afterwards. This has to be a plain VARCHAR of the provider
+-- string, NOT a FK to models.id, for the same reason usage_events.model is one:
+-- a run's record of what actually generated it must survive the catalog row
+-- being disabled, renamed, or deleted.
+--
+-- Stamping rather than looking up "the user's current choice" at generate()
+-- time is load-bearing - worker.js picks a session up in a different process
+-- minutes later, and a user changing the dropdown mid-run would otherwise
+-- switch models between pipeline turns.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER resume_requested;
+ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER container_id;
+ALTER TABLE spec_doc_jobs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER trunk_commit_sha;
+
+-- The circuit breaker was keyed on provider alone, which was fine when one
+-- deployment meant one model: with several models behind the same NIM endpoint,
+-- one bad model id tripping the breaker would lock out every other model on
+-- that provider. DROP + ADD PRIMARY KEY is idempotent here (there is always a
+-- PK to drop, and re-adding the same one is a no-op in effect); the existing
+-- single row per provider cannot collide on the '' default.
+--
+-- Pre-existing rows are backfilled with model = '', which app code reads as
+-- "locked for every model on this provider" (providerHealth.PROVIDER_WIDE) -
+-- NOT as a dead row. That matters: a provider genuinely locked on quota at
+-- upgrade time has to keep blocking afterwards. Keying the lookup on the
+-- narrower (provider, model) alone would have left that row matching nothing,
+-- silently releasing a live lock on the one upgrade where it mattered.
+ALTER TABLE model_provider_health ADD COLUMN IF NOT EXISTS model VARCHAR(100) NOT NULL DEFAULT '' AFTER provider;
+ALTER TABLE model_provider_health DROP PRIMARY KEY, ADD PRIMARY KEY (provider, model);
+
+-- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is
 -- already taken by the AI-pipeline sessions table above.
 -- ---------------------------------------------------------------------------

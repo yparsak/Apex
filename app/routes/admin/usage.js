@@ -30,12 +30,19 @@ router.get('/', async (req, res) => {
 });
 
 // Manual-only recovery (see ROADMAP.md Phase 14 Open: recovery semantics) -
-// there's no auto-expiry, so a locked provider stays locked until an admin
-// clears it here.
+// there's no auto-expiry, so a locked model stays locked until an admin clears
+// it here. The model comes from the body rather than the path: it's the
+// provider's own id (e.g. 'google/gemma-4-31b-it'), whose slashes would need
+// escaping to survive a path segment.
 router.post('/providers/:provider/clear-lock', async (req, res) => {
   const { provider } = req.params;
-  await providerHealth.clearLock(provider);
-  await logAdminAction({ adminUserId: req.session.user.id, action: 'provider.clear_lock', detail: { provider } });
+  const model = req.body.model || '';
+  await providerHealth.clearLock(provider, model);
+  await logAdminAction({
+    adminUserId: req.session.user.id,
+    action: 'provider.clear_lock',
+    detail: { provider, model },
+  });
   res.redirect('/admin/usage');
 });
 

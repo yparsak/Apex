@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const appLock = require('./app/lib/appLock');
 const specDocScanService = require('./app/lib/documents/specDocScanService');
 const specDocService = require('./app/lib/documents/specDocService');
 const { initProcessLogger } = require('./app/lib/logger');
@@ -15,8 +16,32 @@ const logger = initProcessLogger('spec-doc-worker');
 // of worker.js's own AI-pipeline poll loop.
 async function main() {
   logger.info('started');
-  await specDocScanService.scanForStaleRepos();
-  await specDocService.drainQueuedJobs();
+
+  // Same reasoning as worker.js's poll guard (see ROADMAP.md Phase 22): a
+  // maintenance window freezes the whole system, not just its UI, and with no
+  // enabled model there is nothing to generate docs against. Skipping both the
+  // scan and the drain is lossless here - this is a nightly one-shot, and
+  // whatever is stale tonight is still stale tomorrow night. Log retention
+  // still runs: it touches no model and no repo, and skipping it would let
+  // logs grow unbounded for the length of a maintenance window.
+  // try/catch so a failed lock read can't skip logRetention below: an
+  // uncaught throw here would reach the top-level .catch and process.exit(1)
+  // before retention ran, which is exactly what the comment above says must
+  // not happen. Fails open, like the web gate and worker.js.
+  let lock = { locked: false };
+  try {
+    lock = await appLock.getLockState();
+  } catch (err) {
+    logger.error({ err }, 'lock-state read failed - proceeding with scan and drain');
+  }
+
+  if (lock.locked) {
+    logger.warn({ reason: lock.reason }, 'app is locked - skipping spec-doc scan and drain');
+  } else {
+    await specDocScanService.scanForStaleRepos();
+    await specDocService.drainQueuedJobs();
+  }
+
   logRetention.purgeOnce(logger);
   logger.info('completed');
 }

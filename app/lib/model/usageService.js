@@ -6,8 +6,11 @@
 const db = require('../db');
 const pricing = require('./pricing');
 
-async function recordUsage({ callSite, sessionId = null, repoId = null, provider, model, usage = {} }) {
-  const costUsd = pricing.computeCost(model, usage);
+// `price` is passed straight through from modelAdapter.generate's result, which
+// already read it off the model's catalog row for this call - see
+// pricing.computeCost. Omitting it is safe; it just costs a second lookup.
+async function recordUsage({ callSite, sessionId = null, repoId = null, provider, model, usage = {}, price = null }) {
+  const costUsd = await pricing.computeCost(model, usage, price);
   await db.query(
     `INSERT INTO usage_events
       (call_site, session_id, repo_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)

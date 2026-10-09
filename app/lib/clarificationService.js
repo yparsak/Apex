@@ -75,11 +75,15 @@ function toModelMessages(map, index, conversation, instructions) {
 // writes, so the branch tip cannot move out from under a line number
 // mid-conversation the way a ranged read and an anchored write could drift
 // apart.
+//
+// The model comes from `session.model`, stamped when the session was created
+// (see db/schema.sql Phase 22) - so a whole clarification conversation stays on
+// one model even if the user changes their selection partway through it.
 async function runModelLoop(messages, org, repo, branch, session, index) {
   const scratch = messages.slice();
 
   for (let attempt = 0; attempt < MAX_FILE_FETCHES; attempt++) {
-    const result = await modelAdapter.generate(scratch);
+    const result = await modelAdapter.generate(scratch, { model: session.model });
     const reply = result.text.trim();
     usageService
       .recordUsage({
@@ -89,6 +93,7 @@ async function runModelLoop(messages, org, repo, branch, session, index) {
         provider: result.provider,
         model: result.model,
         usage: result.usage,
+        price: result.price,
       })
       .catch(() => {});
 

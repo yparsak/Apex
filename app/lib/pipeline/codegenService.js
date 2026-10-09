@@ -201,7 +201,11 @@ async function readWholeFile(containerId, repoRoot, path) {
 // returns a partial result) if the model doesn't emit DONE within MAX_TURNS,
 // or emits DONE without changing anything - the caller treats either as a
 // codegen-stage pipeline failure, same as any other step failure.
-async function runCodegen({ containerId, org, repo, branch, repoRoot, requirementsText, sessionId }) {
+// `model` is the one stamped on this run's session (see db/schema.sql Phase
+// 22), threaded in from pipelineRunner rather than resolved here: codegen runs
+// in worker.js minutes after the user approved, and must use the model that
+// approval was made with, not whatever the user has selected by then.
+async function runCodegen({ containerId, org, repo, branch, repoRoot, requirementsText, sessionId, model }) {
   const log = processLogger().child({ sessionId, repoId: repo.id });
 
   const [tree, instructions] = await Promise.all([
@@ -242,7 +246,7 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     let result;
     try {
-      result = await modelAdapter.generate(messages);
+      result = await modelAdapter.generate(messages, { model });
     } catch (err) {
       // A reply the provider cut short at max_tokens is a failed turn, not a
       // result (see ROADMAP.md Phase 19): its body ends mid-token, and a
@@ -283,6 +287,7 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
         provider: result.provider,
         model: result.model,
         usage: result.usage,
+        price: result.price,
       })
       .catch(() => {});
     messages.push({ role: 'assistant', content: reply });

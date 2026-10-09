@@ -42,12 +42,41 @@ string `generate()` resolved with before Phase 14.
 
 ### Configuration
 
+Endpoint credentials come from the environment; **which** model to call does not.
+
 | Env var | Purpose |
 |---|---|
-| `MODEL` | Model name sent to the chat-completions endpoint (e.g. `google/gemma-4-31b-it`). |
 | `NVIDIA_BASE_URL` | Base URL, e.g. `https://integrate.api.nvidia.com/v1`. |
 | `NVIDIA_API_KEY` | Bearer token. |
-| `MODEL_MAX_TOKENS` | `max_tokens` on every request. Defaults to 4096 — about 400 lines of output, ceiling. A reply that hits this limit is **discarded**, not used (see Reliability below), so setting it too low doesn't degrade output quality, it fails turns outright. |
+
+`MODEL` and `MODEL_MAX_TOKENS` were removed in Phase 22. Models are now rows in the
+`models` table, managed by an admin at `/admin/models`, with per-model `max_tokens` and
+pricing — context windows differ per model, so one global `MODEL_MAX_TOKENS` was wrong
+for every model but one.
+
+| Model field | Purpose |
+|---|---|
+| `model_id` | Model name sent to the chat-completions endpoint (e.g. `google/gemma-4-31b-it`). |
+| `max_tokens` | `max_tokens` on every request for this model. A reply that hits this limit is **discarded**, not used (see Reliability below), so setting it too low doesn't degrade output quality, it fails turns outright. |
+| `price_in_per_1m` / `price_out_per_1m` | $/million tokens, applied at `usage_events` write time. |
+| `enabled` / `is_default` | Whether users can select it, and what they get before they pick. |
+
+The catalog ships **empty** and there is no env fallback, so a fresh install has no
+usable model: the app locks itself with a "No model available" message (see
+`app/lib/appLock.js`) until an admin adds one. Admins are exempt from that lock, or
+`/admin/models` would be unreachable from a fresh install.
+
+A model is resolved once per unit of work and **stamped** onto it (`sessions.model`,
+`pipeline_runs.model`, `spec_doc_jobs.model`) — never looked up at call time. The worker
+picks a session up in a different process minutes later, so looking it up then would let
+a user switch models between pipeline turns by changing their selection mid-run.
+
+Which model gets stamped depends on who asked for the work:
+
+| Work | Model used |
+|---|---|
+| Clarification, overlap, codegen (`apex-worker`) | The requesting user's selection, stamped on the session when it was created. `/resume` reuses the failed run's own model. |
+| Spec/Communication Protocol docs (`specDocWorker.js`) | The **Spec document model** set on `/admin/models`; falls back to the catalog default when unset, or when the configured model has been disabled or deleted. |
 
 ### Request/response handling
 
@@ -481,8 +510,8 @@ map — the model is told this is authoritative guidance, not repo content it as
   <status>: <body>"`. Only a network error, a 5xx, or a 408 actually exhausts the
   budget; any other 4xx reports the same message after a single attempt, with no delay.
 - **Reply cut off at `max_tokens`** — surfaces as `"NVIDIA NIM stopped generating at the
-  max_tokens limit (MODEL_MAX_TOKENS=<n>, <n> output tokens) - the reply was cut off
-  mid-output and has been discarded rather than used."` Never retried (the same request
+  max_tokens limit (model "<id>", max_tokens=<n>, <n> output tokens) - the reply was cut
+  off mid-output and has been discarded rather than used."` Never retried (the same request
   produces the same cutoff). In codegen the first two such replies are fed back to the
   model as "your previous reply was cut off... nothing was written" so it can pick a
   smaller change; the third fails the codegen stage. At every other call site it fails

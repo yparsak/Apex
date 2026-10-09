@@ -52,15 +52,18 @@ async function loadContext(sessionId) {
   return { session, branch, repo, org, requirements };
 }
 
-async function createRun(sessionId) {
+// pipeline_runs.model duplicates sessions.model rather than being read through
+// the join, because the two can legitimately differ: a session is stamped once
+// at creation, but /retry re-runs it, and recording the model per attempt keeps
+// an earlier attempt's row accurate about what actually produced its logs.
+async function createRun(sessionId, model) {
   const [[{ attempts }]] = await db.query('SELECT COUNT(*) AS attempts FROM pipeline_runs WHERE session_id = ?', [
     sessionId,
   ]);
-  const [result] = await db.query('INSERT INTO pipeline_runs (session_id, attempt_number, status) VALUES (?, ?, ?)', [
-    sessionId,
-    attempts + 1,
-    'running',
-  ]);
+  const [result] = await db.query(
+    'INSERT INTO pipeline_runs (session_id, attempt_number, status, model) VALUES (?, ?, ?, ?)',
+    [sessionId, attempts + 1, 'running', model || null]
+  );
   return result.insertId;
 }
 
@@ -127,8 +130,17 @@ async function cloneStep(containerId, org, repo, branch) {
   await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'config', 'user.name', 'Apex']);
 }
 
-async function codegenStep({ containerId, org, repo, branch, requirementsText, sessionId }) {
-  await codegenService.runCodegen({ containerId, org, repo, branch, repoRoot: WORKSPACE, requirementsText, sessionId });
+async function codegenStep({ containerId, org, repo, branch, requirementsText, sessionId, model }) {
+  await codegenService.runCodegen({
+    containerId,
+    org,
+    repo,
+    branch,
+    repoRoot: WORKSPACE,
+    requirementsText,
+    sessionId,
+    model,
+  });
 
   const commitResult = await dockerRunner.exec(containerId, [
     'sh',
@@ -189,7 +201,7 @@ async function run(sessionId) {
   let session, branch, repo, org, requirements, runId, log;
   try {
     ({ session, branch, repo, org, requirements } = await loadContext(sessionId));
-    runId = await createRun(sessionId);
+    runId = await createRun(sessionId, session.model);
     log = processLogger().child({ sessionId, repoId: repo.id, coNumber: branch.co_number, runId });
     await db.query("UPDATE sessions SET status = 'running', resume_requested = FALSE WHERE id = ?", [sessionId]);
   } catch (err) {
@@ -205,6 +217,21 @@ async function run(sessionId) {
   let buildLog = '';
   let testLog = '';
   try {
+    // A session with no stamped model cannot run, and is rejected here - before
+    // the container, before the clone, before any GitHub call. Reachable for a
+    // session that was already 'queued' when Phase 22 added the nullable
+    // `model` column, since an empty catalog gives nothing to backfill those
+    // rows with. Failing late instead would cost a container boot and a full
+    // clone, then surface the adapter's developer-facing message. /retry
+    // re-stamps (see app/lib/sessionService.js), so this is recoverable.
+    if (!session.model) {
+      throw new Error(
+        'This session has no model assigned - it was created before models were configurable, ' +
+          'or its model has since been removed from the catalog. Click Retry to re-run it with ' +
+          'your currently selected model.'
+      );
+    }
+
     // A prior failed attempt on this same session (see ROADMAP.md Phase 8's
     // retry-on-failure) left its container kept alive - this run abandons it
     // rather than resuming it, so clean it up before doing anything else.
@@ -228,7 +255,7 @@ async function run(sessionId) {
 
     await setStage(runId, 'codegen', log);
     const requirementsText = requirements.map((r) => `- ${r.requirement_text}`).join('\n');
-    await codegenStep({ containerId, org, repo, branch, requirementsText, sessionId });
+    await codegenStep({ containerId, org, repo, branch, requirementsText, sessionId, model: session.model });
 
     // Seal the sandbox before build/test run (see ROADMAP.md Phase 7) - no
     // registry egress once codegen's model-adapter calls are done.
@@ -315,7 +342,20 @@ async function resume(sessionId) {
       await dockerRunner.exec(containerId, ['git', '-C', WORKSPACE, 'clean', '-fd']);
 
       await setStage(runId, 'codegen', log);
-      await codegenStep({ containerId, org, repo, branch, requirementsText, sessionId });
+      // The failed run's own model, not the session's current one. A resume
+      // re-enters a half-finished run whose earlier steps already ran against
+      // failedRun.model; re-resolving here would stitch one model's partial
+      // output together with another model's continuation. Falls back to the
+      // session stamp only for a run that predates pipeline_runs.model.
+      await codegenStep({
+        containerId,
+        org,
+        repo,
+        branch,
+        requirementsText,
+        sessionId,
+        model: failedRun.model || session.model,
+      });
 
       await dockerRunner.disconnectNetwork(containerId, SANDBOX_NETWORK);
 

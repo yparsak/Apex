@@ -507,6 +507,15 @@ router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
   if (!loaded) return;
   const { branch, session } = loaded;
 
+  // Re-stamp before re-queueing. A full from-scratch re-run should use the
+  // user's current model, and more importantly a session that failed *because*
+  // of its stamp (a NULL left by a pre-Phase-22 row, or a model since renamed
+  // out of the catalog) would otherwise fail identically on every retry - the
+  // Retry button being the only thing the failure page offers. Unlike /resume,
+  // nothing here is reused from the failed attempt, so there is no partial
+  // output for a different model to be stitched onto.
+  await sessionService.restampSession(session.id, req.session.user.id);
+
   const [result] = await db.query(
     "UPDATE sessions SET status = 'queued', approved_at = NOW(), resume_requested = FALSE WHERE id = ? AND status = 'failed'",
     [session.id]

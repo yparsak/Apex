@@ -1,0 +1,148 @@
+<%- include('../partials/head', { title: 'Admin - Models', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'models' }) %>
+    <h1>Models</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+
+    <p class="placeholder">
+      The models users can choose from on the repo list. Model ID is the provider's own
+      identifier (e.g. <code>google/gemma-4-31b-it</code>) - it is what gets sent to the
+      provider and recorded against usage. Disabling a model hides it from users without
+      touching history; the default is what users get until they pick something else.
+    </p>
+
+    <% if (!models.length) { %>
+      <p class="error">
+        No models are defined, so Apex is locked for everyone except admins. Add one below.
+      </p>
+    <% } else { %>
+      <%
+        // Drives the confirm prompt on the last remaining enable toggle - turning
+        // it off locks the app for every non-admin, which should not be a surprise.
+        var enabledCount = models.filter(function(m) { return m.enabled; }).length;
+      %>
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Model</th><th>Max tokens</th><th>$/1M in</th><th>$/1M out</th>
+            <th>Status</th><th>Default</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <% models.forEach(function(m) { %>
+          <tr>
+            <td colspan="4">
+              <form method="POST" action="/admin/models/<%= m.id %>/update" class="row-form">
+                <input type="text" name="display_name" value="<%= m.display_name %>" required>
+                <input type="text" name="model_id" value="<%= m.model_id %>" required>
+                <%# A select, not free text: this value keys the circuit breaker
+                    and usage attribution, and only a provider with a registered
+                    adapter can actually serve a call. %>
+                <select name="provider" required>
+                  <% providers.forEach(function(p) { %>
+                    <option value="<%= p %>" <%= p === m.provider ? 'selected' : '' %>><%= p %></option>
+                  <% }) %>
+                  <%# A row whose provider is no longer registered keeps its
+                      value visible rather than silently snapping to another. %>
+                  <% if (providers.indexOf(m.provider) === -1) { %>
+                    <option value="<%= m.provider %>" selected><%= m.provider %> (unknown)</option>
+                  <% } %>
+                </select>
+                <input type="number" name="max_tokens" value="<%= m.max_tokens %>" min="1" step="1" required>
+                <input type="number" name="price_in_per_1m" value="<%= m.price_in_per_1m %>" min="0" step="0.0001">
+                <input type="number" name="price_out_per_1m" value="<%= m.price_out_per_1m %>" min="0" step="0.0001">
+                <input type="text" name="description" value="<%= m.description || '' %>" placeholder="Description shown to users">
+                <button type="submit">Save</button>
+              </form>
+            </td>
+            <td>
+              <form method="POST" action="/admin/models/<%= m.id %>/enabled" class="row-form"
+                <% if (m.enabled && enabledCount === 1) { %>
+                onsubmit="return confirm('This is the only enabled model. Disabling it locks Apex for all non-admin users until a model is enabled again. Continue?')"
+                <% } %>
+              >
+                <input type="hidden" name="enabled" value="<%= m.enabled ? 'false' : 'true' %>">
+                <button type="submit"><%= m.enabled ? 'Disable' : 'Enable' %></button>
+              </form>
+            </td>
+            <td>
+              <% if (m.is_default) { %>
+                <span class="health-badge health-healthy">default</span>
+              <% } else { %>
+                <form method="POST" action="/admin/models/<%= m.id %>/default" class="row-form">
+                  <button type="submit">Make default</button>
+                </form>
+              <% } %>
+            </td>
+            <td>
+              <%# The confirm message is a fixed string, NOT built by
+                  interpolating display_name. EJS escapes `'` to `&#39;`, which
+                  the HTML parser decodes back to `'` before this handler is
+                  compiled - so a model named "Bob's Gemma" would produce a
+                  SyntaxError, the handler would never install, and Delete would
+                  fire with no confirmation at all. A name containing `');`
+                  would run arbitrary JS in the admin's own page. %>
+              <form method="POST" action="/admin/models/<%= m.id %>/delete" class="row-form"
+                onsubmit="return confirm('Delete this model? Past usage and completed sessions keep their record of it, but it disappears from the catalog.')">
+                <button type="submit" class="danger-button">Delete</button>
+              </form>
+            </td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    <% } %>
+
+    <h2>Spec document model</h2>
+    <p class="placeholder">
+      Which model generates the Spec / Communication Protocol docs. That job runs
+      unattended overnight across every repo whose trunk has moved, with no user behind it
+      to inherit a choice from — so it is set here rather than picked per run, and can sit
+      on a cheaper model than interactive codegen. Leave it on the catalog default to keep
+      the previous behaviour.
+    </p>
+    <% if (!models.filter(function(m) { return m.enabled; }).length) { %>
+      <p class="placeholder">No enabled models to choose from yet.</p>
+    <% } else { %>
+      <% if (specDocUsedFallback) { %>
+        <p class="error">
+          The model configured here is no longer available (disabled or deleted). Spec documents
+          are being generated with
+          <strong><%= specDocEffective ? specDocEffective.display_name : 'no model' %></strong>
+          instead. Pick a model below to make the choice explicit again.
+        </p>
+      <% } %>
+      <form method="POST" action="/admin/models/spec-doc-model" class="stacked-form">
+        <label>Model
+          <select name="model_id">
+            <option value="" <%= specDocModelId ? '' : 'selected' %>>
+              Use the catalog default<%= specDocEffective && !specDocModelId ? ' (' + specDocEffective.display_name + ')' : '' %>
+            </option>
+            <% models.filter(function(m) { return m.enabled; }).forEach(function(m) { %>
+              <option value="<%= m.id %>" <%= specDocModelId === m.id ? 'selected' : '' %>><%= m.display_name %></option>
+            <% }) %>
+          </select>
+        </label>
+        <button type="submit">Save</button>
+      </form>
+    <% } %>
+
+    <h2>New model</h2>
+    <form method="POST" action="/admin/models" class="stacked-form">
+      <label>Display name <input type="text" name="display_name" required></label>
+      <label>Model ID <input type="text" name="model_id" placeholder="google/gemma-4-31b-it" required></label>
+      <label>Description <input type="text" name="description" placeholder="Shown to users in the model picker"></label>
+      <label>Provider
+        <select name="provider" required>
+          <% providers.forEach(function(p) { %>
+            <option value="<%= p %>"><%= p %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>Max tokens <input type="number" name="max_tokens" value="4096" min="1" step="1" required></label>
+      <label>Price per 1M input tokens (USD) <input type="number" name="price_in_per_1m" value="0" min="0" step="0.0001"></label>
+      <label>Price per 1M output tokens (USD) <input type="number" name="price_out_per_1m" value="0" min="0" step="0.0001"></label>
+      <button type="submit">Create</button>
+    </form>
+  </main>
+<%- include('../partials/foot') %>
