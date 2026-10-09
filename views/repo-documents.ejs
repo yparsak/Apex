@@ -14,12 +14,18 @@
       <p class="placeholder">No requirements have been implemented on this repo yet.</p>
     <% } %>
 
-    <h2>Spec / Communication Protocol</h2>
-    <% if (specDoc) { %>
-      <p class="placeholder">Last updated <%= specDoc.updated_at %></p>
-      <pre class="document-body"><%= specDoc.content %></pre>
-    <% } else { %>
-      <p class="placeholder">Not generated yet — regenerates automatically once trunk has content to summarize.</p>
-    <% } %>
+    <%# One block per registered document type (see ROADMAP.md Phase 23), so a
+        newly registered type shows up here without a view edit. A type an admin
+        has switched off still renders whatever was last generated for it:
+        disabling stops regeneration, it does not delete content. %>
+    <% generatedDocs.forEach(function(d) { %>
+      <h2><%= d.label %></h2>
+      <% if (d.doc) { %>
+        <p class="placeholder">Last updated <%= d.doc.updated_at %></p>
+        <pre class="document-body"><%= d.doc.content %></pre>
+      <% } else { %>
+        <p class="placeholder">Not generated yet — regenerates automatically once trunk has content to summarize, if this document is enabled.</p>
+      <% } %>
+    <% }) %>
   </main>
 <%- include('partials/foot') %>

@@ -5,6 +5,7 @@ const docScanService = require('./app/lib/documents/docScanService');
 const docService = require('./app/lib/documents/docService');
 const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
+const repoMap = require('./app/lib/repoMap');
 
 const logger = initProcessLogger('doc-worker');
 
@@ -12,8 +13,8 @@ const logger = initProcessLogger('doc-worker');
 // whatever cron-like facility the deployment target provides (host crontab,
 // systemd timer, container-native CronJob, etc.) rather than looping
 // in-process: scan for trunk staleness, drain whatever landed in
-// spec_doc_jobs, purge rotated logs past retention, then exit - independent
-// of worker.js's own AI-pipeline poll loop.
+// doc_jobs, retire unread repo file maps, purge rotated logs past retention,
+// then exit - independent of worker.js's own AI-pipeline poll loop.
 async function main() {
   logger.info('started');
 
@@ -36,10 +37,30 @@ async function main() {
   }
 
   if (lock.locked) {
-    logger.warn({ reason: lock.reason }, 'app is locked - skipping spec-doc scan and drain');
+    logger.warn({ reason: lock.reason }, 'app is locked - skipping document scan and drain');
   } else {
     await docScanService.scanForStaleRepos();
     await docService.drainQueuedJobs();
+  }
+
+  // Phase 20's file maps ride this nightly invocation rather than inventing a
+  // second schedule: rebuild is already handled by the (repo_id, commit_sha)
+  // key - a moved trunk simply misses the cache - so the only thing left to do
+  // on a timer is retire maps for shas nobody reads any more.
+  //
+  // Deliberately out here next to logRetention rather than inside the scan
+  // where it used to live (see ROADMAP.md Phase 23): now that every document
+  // type can be turned off, a prune riding the scan would silently stop the
+  // moment an admin unchecks the last box, leaving an unrelated cache growing
+  // forever as a side effect of a documentation setting. Also outside the lock
+  // branch, for the same reason log retention is: it touches no model and no
+  // repo. Failure is logged, not fatal - a map table that grows a little is
+  // harmless, and the top-level catch would skip retention below.
+  try {
+    const removed = await repoMap.pruneUnused();
+    if (removed) logger.info({ removed }, 'pruned unused repo file maps');
+  } catch (err) {
+    logger.error({ err }, 'repo file map prune failed');
   }
 
   logRetention.purgeOnce(logger);

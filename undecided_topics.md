@@ -134,6 +134,37 @@ toward, treated as navigation hints rather than ground truth. Still open:
   comfortably smaller than "restate the file", which is the property that matters, but
   nothing has yet pushed on them.
 
+## Pluggable Document Types (Phase 23)
+
+Phase 23 is built — document types are a code registry
+([docTypes.js](app/lib/documents/docTypes.js)), enablement and per-type model live in
+`app_settings` behind `/admin/documents`, and `doc_jobs`/`repo_doc_sync` are keyed per
+`(repo, type)`. Two of the phase's open questions were closed by the implementation:
+a job whose type is disabled before the drain ends in a new terminal `skipped` status
+rather than lingering `queued`, and `repos.spec_doc_synced_commit_sha` was kept (frozen,
+no longer read or written) rather than dropped, since dropping a column is the one
+irreversible step in a migration that is otherwise fully replayable. Still open:
+
+- **Enablement is global, not per-repo.** A Security Analysis doc may be wanted for three
+  repos and pointless for thirty, but `doc_types_enabled` is a single comma-separated
+  `app_settings` string — the smaller first cut, and the wrong shape to grow a per-repo
+  override from. Whoever needs per-repo will be replacing that key, not extending it.
+- **Cadence is still one nightly invocation for everything.** Per-type cadence would
+  reopen the Phase 15 scheduling-mechanism question rather than settling it, so every
+  type rides the same cron entry regardless of how expensive or how fast-moving it is.
+- **No versioning or history.** Regeneration overwrites `repo_documents` in place
+  (inherited from Phase 8). With a per-type model, "which model wrote the version I read
+  last week" is now a reasonable question and still unanswerable.
+- **De-registering a type hides its content.** Disabling a type deliberately preserves
+  what was generated, but the repo Documents page renders a loop over the *registry*, so
+  removing an entry from `docTypes.js` leaves orphaned `repo_documents` rows with no
+  surface to read them from. `/admin/documents` flags orphaned keys in
+  `doc_types_enabled`; it says nothing about orphaned content.
+- **Not exercised against a live model.** The whole scan → enqueue → drain → upsert →
+  bill path ran against the real app and a real database with a stubbed
+  `modelAdapter.generate` and `githubApi.getBranch` (see Phase 23's implementation notes
+  in [ROADMAP.md](ROADMAP.md)). No real NIM request was issued, same gap as Phase 22.
+
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 
 - **SSO** — `authProvider` interface supports it, and Phase 17 decided provider

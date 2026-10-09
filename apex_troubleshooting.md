@@ -305,25 +305,43 @@ mean the model call itself failed. Only successful `generate()` calls write a ro
 failed/retried attempts (see above) don't, since NIM's error responses carry no token
 counts to log.
 
-## Spec/Communication Protocol doc not updating
+## A generated document is not updating
 
-This doc regenerates via `apex-doc-worker`, a one-shot script run nightly by
-cron (`make doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
-`apex-worker`'s AI-pipeline queue. If it looks stale:
+Generated documents (the Spec/Communication Protocol doc and anything else in the
+document-type registry) regenerate via `apex-doc-worker`, a one-shot script run nightly
+by cron (`make doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
+`apex-worker`'s AI-pipeline queue. If one looks stale:
 
-1. Confirm the nightly cron invocation of `make doc-worker` is actually
+1. **Check that the document type is enabled on `/admin/documents`** (ROADMAP.md
+   Phase 23). Since that toggle exists, this is the most likely cause by a wide margin,
+   and it is invisible from the repo's Documents page: disabling stops regeneration but
+   deliberately does *not* delete what was already written, so the page keeps showing
+   the last generated version with no indication it has been frozen. Admin actions are
+   audited, so `admin_audit_log` (`doc_type.set_enabled`) will say who turned it off and
+   when.
+2. Confirm the nightly cron invocation of `make doc-worker` is actually
    configured and ran (check the host crontab/systemd timer/CronJob, whichever
    the deployment target uses) — there's no persistent container to check with
    `docker ps` anymore.
-2. Check `repos.spec_doc_synced_commit_sha` against the repo's actual default-branch
-   HEAD on GitHub — the scan only enqueues a job when these differ.
-3. Check `spec_doc_jobs` for a `failed` row for that repo, and
-   `logs/doc-worker.log` for the error (each job failure is logged independently;
-   one repo's failure doesn't block others draining from the same queue).
+3. Check `repo_doc_sync` for that `(repo_id, doc_type)` against the repo's actual
+   default-branch HEAD on GitHub — the scan only enqueues a job when these differ.
+   Staleness is tracked per document type, so one type being current says nothing about
+   another. (`repos.spec_doc_synced_commit_sha` is the superseded, no-longer-written
+   column this replaced — ignore it.)
+4. Check `doc_jobs` for a row for that `(repo_id, doc_type)`, and `logs/doc-worker.log`
+   for the error (each job failure is logged independently; one repo's failure doesn't
+   block others draining from the same queue). A `failed` row is a generation error; a
+   `skipped` row means the type was disabled between the scan that queued it and the
+   drain, which points back at step 1.
+5. If the log says the configured model was missing or disabled and the catalog default
+   was used instead, the document *was* generated — just not by the model the admin
+   picked. Re-pick it on `/admin/documents`.
 
 Note this worker now also retires stale `repo_file_maps` rows (ROADMAP.md Phase 20), so
-step 1 has a second symptom: if the nightly invocation isn't running at all, that table
-grows without bound. It won't produce wrong behavior — maps are keyed by commit sha, so
+step 2 has a second symptom: if the nightly invocation isn't running at all, that table
+grows without bound. The prune runs from `docWorker.js`'s `main()`, not from the
+document scan (Phase 23), so it keeps running even with every document type disabled —
+step 1 is not a cause of this one. It won't produce wrong behavior — maps are keyed by commit sha, so
 an old row is never served for a new commit — but it is the same root cause.
 
 ## The model behaves as though files don't exist

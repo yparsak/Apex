@@ -33,7 +33,7 @@ site:
   log its own `usage_events` row via
   [usageService.js](app/lib/model/usageService.js) — cost attribution needs
   session/repo context `modelAdapter.js` itself doesn't have, so the actual
-  `usageService.recordUsage(...)` call happens at each of the four call sites below,
+  `usageService.recordUsage(...)` call happens at each of the call sites below,
   not here.
 
 Every call site below now does `const { text, usage, provider, model } =
@@ -67,7 +67,7 @@ usable model: the app locks itself with a "No model available" message (see
 `/admin/models` would be unreachable from a fresh install.
 
 A model is resolved once per unit of work and **stamped** onto it (`sessions.model`,
-`pipeline_runs.model`, `spec_doc_jobs.model`) — never looked up at call time. The worker
+`pipeline_runs.model`, `doc_jobs.model`) — never looked up at call time. The worker
 picks a session up in a different process minutes later, so looking it up then would let
 a user switch models between pipeline turns by changing their selection mid-run.
 
@@ -76,7 +76,7 @@ Which model gets stamped depends on who asked for the work:
 | Work | Model used |
 |---|---|
 | Clarification, overlap, codegen (`apex-worker`) | The requesting user's selection, stamped on the session when it was created. `/resume` reuses the failed run's own model. |
-| Spec/Communication Protocol docs (`docWorker.js`) | The **Spec document model** set on `/admin/models`; falls back to the catalog default when unset, or when the configured model has been disabled or deleted. |
+| Any generated document (`docWorker.js`) | The model set for **that document type** on `/admin/documents` — one setting per registry entry (`doc_model_id:<key>`), so a Security Analysis doc can run on an expensive model while a Code Review doc runs on a cheap one. Each falls back to the catalog default when unset, or when the configured model has been disabled or deleted; the fallback is announced on the admin screen *and* logged by the nightly scan. The model is resolved once by the scan and stamped on the job, not re-read at drain time. |
 
 ### Request/response handling
 
@@ -144,7 +144,7 @@ The win is not a bigger context window; it is reading less.
 
 | Call site | Reads served from | Why |
 |---|---|---|
-| Clarification, Spec doc | GitHub, at the branch tip | No container exists yet. Nothing here writes, so a line number cannot go stale mid-conversation. |
+| Clarification, generated documents | GitHub, at the branch tip | No container exists yet. Nothing here writes, so a line number cannot go stale mid-conversation. |
 | Codegen | **The sandbox container's working tree** | Writes land in the container. A range read from GitHub and an anchored write into the container would drift apart the moment the model makes one edit — it would be reading coordinates from one artifact and writing into another. |
 
 **Clipping is announced, never silent** (ROADMAP.md Phase 19). A complete read is
@@ -228,7 +228,13 @@ ROADMAP.md Phase 20 replaced that with a **size-aware map**
   can't serve degrades to building the map live — it is a performance store, not a source
   of truth.
 
-## The four call sites
+## The call sites
+
+Three of these are fixed points in the AI pipeline. The fourth is not a single call
+site any more but a **registry of them sharing one code path** (see ROADMAP.md
+Phase 23): every generated document type is its own prompt, its own context builder and
+its own `usage_events.call_site`, run by the same job mechanics. The count is no longer
+fixed, and a new document type adds a call site without adding any code here.
 
 ### 1. Clarification — [clarificationService.js](app/lib/clarificationService.js)
 
@@ -442,12 +448,18 @@ would be keyed under — a push landing between the two lookups would otherwise 
 commit's outline under that commit's key, which this run wouldn't notice but a later
 clarification would.
 
-### 4. Spec/Communication Protocol doc — [docService.js](app/lib/documents/docService.js)
+### 4. Generated documents — [docService.js](app/lib/documents/docService.js) over [docTypes.js](app/lib/documents/docTypes.js)
 
 Runs during `docWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
-Phase 15), once per repo whose trunk has moved. **The
-one call site where file selection is not model-driven**: there's no `FETCH_FILE` loop
-here at all. Instead, Apex pre-selects a small fixed allowlist —
+Phase 15), once per `(repo, enabled document type)` whose trunk has moved.
+`docService.js` owns only the mechanics shared by every type — model resolution, the
+`generate` call, the `usage_events` write, the `repo_documents` upsert, the
+`repo_doc_sync` write, and one try/catch per job. The prompt, the context and the
+billing call site come from the type's registry entry, so what follows describes the
+**Spec/Communication Protocol entry**, not the mechanism.
+
+That entry is **the one place where file selection is not model-driven**: there's no
+`FETCH_FILE` loop here at all. Instead, Apex pre-selects a small fixed allowlist —
 
 ```
 README.md, package.json, apex.pipeline.json
@@ -462,6 +474,10 @@ here would change generated doc content, which is Phase 15's concern and wants i
 before/after review. The model is asked to synthesize a complete Markdown document
 from that material in one shot — the whole document is regenerated from scratch every
 time, never incrementally patched, so there's no prior-document state to feed back in.
+
+Another entry is free to do none of that: a type whose `buildContext` drives a
+`FETCH_FILE` loop, or feeds the full size-aware map, changes nothing outside its own
+file.
 
 ## Limits at a glance
 
@@ -493,8 +509,8 @@ these are written down outside code, so it names the module.
 | `MAX_PATCH_CHARS_PER_FILE` | 2,000 | `overlapService.js` | Overlap detection — per-file patch, before the total cap above |
 | `MAX_INSTRUCTIONS_LENGTH` | 6,000 | `repoClarificationInstructions.js` | Admin clarification instructions — enforced at save time, not read time |
 
-All four call sites that accept admin-authored `repo_clarification_instructions` (every
-one except the Spec/Communication Protocol doc) inject it as a clearly labeled
+Every call site that accepts admin-authored `repo_clarification_instructions` (all of
+the pipeline ones — no registry document type uses it today) injects it as a clearly labeled
 `=== ADMIN CLARIFICATION INSTRUCTIONS (authoritative) ===` block, separate from the file
 map — the model is told this is authoritative guidance, not repo content it asked for.
 

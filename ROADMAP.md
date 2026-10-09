@@ -1807,6 +1807,216 @@ Open / undecided for this phase:
   live app and DB, but `.env` is absent from this working copy, so no actual NIM request
   was issued with a catalog-resolved model.
 
+## Phase 23 — Pluggable document types & admin-selectable generation
+
+Today `docWorker.js` generates exactly one document per repo, and nothing can turn it
+off. This phase makes the doc pipeline **registry-driven** — N document types, each
+independently enableable from an admin screen, each with its own model — and registers
+exactly one type: the existing Spec/Communication Protocol doc. No generated content
+changes in this phase.
+
+"Code Review" and "Security Analysis" are the motivating examples and are deliberately
+**not built here**. The phase is done when adding one is *a new file plus a registry
+line* — no schema change, no admin-page edit, no change to `docWorker.js` or
+`docScanService.js`. If adding the second type requires touching any of those, the
+generalization didn't land, and shipping one type is the only honest way to find that
+out before writing three prompts against the wrong seam.
+
+The Phase 15/22 rename groundwork is already done: the worker and services dropped their
+`spec-doc` prefix precisely because they were never spec-specific (see the `docWorker.js`
+rename commit).
+
+### Data model
+
+All idempotent — `db/schema.sql` is replayed whole by `make migrate`, there are no
+incremental migration files. A `RENAME TABLE` is *not* idempotent on replay and needs a
+guard (`information_schema` check, or a rename-then-`CREATE TABLE IF NOT EXISTS` pair).
+
+| Object | Change |
+|---|---|
+| `repo_documents.doc_type` | `ENUM('requirements_log','spec_communication_protocol')` → `VARCHAR(50)`. An ENUM makes every new document type a DDL change, which is exactly the coupling this phase exists to remove. |
+| `usage_events.call_site` | `ENUM(...,'spec_doc')` → `VARCHAR(50)`, same reason — a new type must be able to bill itself without a migration. |
+| `spec_doc_jobs` → `doc_jobs` | The rename deferred during the `docWorker` rename, folded in here because the table is gaining a column anyway. New `doc_type VARCHAR(50) NOT NULL`; `idx_spec_doc_jobs_repo`/`fk_spec_doc_jobs_repo` renamed to match. The in-flight check becomes per `(repo_id, doc_type)`. |
+| `repo_doc_sync` (new) | `(repo_id, doc_type)` → `synced_commit_sha`. Supersedes `repos.spec_doc_synced_commit_sha`: staleness is per document type, not per repo — a Code Review doc and a Spec doc go stale independently, and one column can only ever track one of them. Backfilled from the old column for `spec_communication_protocol`. |
+| `app_settings` keys | `doc_types_enabled` (comma-separated registry keys). `spec_doc_model_id` → `doc_model_id:<key>`, one per type, migrated from the existing value. |
+
+### Design
+
+- **The registry is code, not a table.** `app/lib/documents/docTypes.js` exports one
+  entry per type: `{ key, label, description, docType, callSite, systemPrompt,
+  buildContext(org, repo, branchName) }`. A `doc_types` *table* was rejected: every
+  field but the label is a prompt or a function, so the row could never be the source of
+  truth, and two sources of truth for "which types exist" is the bug that makes an admin
+  screen list a type the code can't run. The DB stores only what an admin *chooses*
+  (enabled, which model); what *exists* is a module.
+- **`docService.js` becomes generic over a registry entry.** Its `KEY_FILES`,
+  `SYSTEM_PROMPT`, and `buildContext` move into the spec-doc registry entry; what stays
+  is the job mechanics every type shares — model resolution and the pre-`buildContext`
+  fallback, `modelAdapter.generate`, the `usage_events` write, the `repo_documents`
+  upsert, the sync-sha update, and the one-try/catch-per-job drain loop.
+- **Unset means today's behavior.** With no `doc_types_enabled` row, the spec doc is
+  enabled — an existing deployment that never visits the new screen keeps generating
+  exactly what it generates now. A type absent from the list is disabled; an unknown key
+  in the list is ignored on read rather than erroring, so removing a registry entry can't
+  wedge the scan.
+- **Disabling stops regeneration; it never deletes content.** An already-generated
+  `repo_documents` row stays readable on the repo's Documents page, just frozen. Deleting
+  generated content on a checkbox toggle is unrecoverable and destroys work an admin
+  probably meant only to pause. If purging is wanted later it should be its own explicit,
+  confirmed action.
+- **Per-type model selection generalizes the Phase 22 spec-doc setting** rather than
+  duplicating it. This is the real payoff of making enablement per-type: Security
+  Analysis can run on an expensive model and Code Review on a cheap one. Keep Phase 22's
+  re-validate-on-read posture — `app_settings` carries no FK, so a configured model since
+  disabled or deleted must fall back to the catalog default with *both* the admin screen
+  and the scan log saying the fallback is in effect.
+- **`repoMap.pruneUnused()` must move out of `scanForStaleRepos()`.** It rides the scan
+  today (Phase 20). Once the scan is per-type and every type can be disabled, map
+  retirement would silently stop the moment an admin unchecks the last box — an unrelated
+  cache growing forever as a side effect of a documentation setting. It belongs in
+  `docWorker.js`'s `main()`, next to `logRetention.purgeOnce()`, which is already the
+  "runs every nightly invocation regardless" slot.
+- **One trunk fetch per repo per run, not per (repo × type).** The scan currently calls
+  `githubApi.getBranch` once per repo; naively looping types inside it multiplies that by
+  the number of enabled types for an identical answer. Fetch the trunk sha once per repo,
+  then compare it against each enabled type's `repo_doc_sync` row. With one type this is
+  invisible; with four it is the difference between one rate-limit budget and four.
+- **Admin surface is a new `/admin/documents` page**, not another section grafted onto
+  `/admin/models`. That page is the model *catalog* — what models exist and what they
+  cost; which documents get written and by which model is a different question that will
+  keep growing (per-type cadence, per-type scope, eventually per-repo overrides). The
+  per-type model select moves there from `/admin/models`, and `views/partials/head.ejs`
+  gains a nav entry next to "Add a model".
+- **Toggles are audited.** Enabling or disabling a type, and changing a type's model, go
+  through `adminAudit.logAdminAction` like every other admin mutation — "the docs stopped
+  regenerating in March" should be answerable.
+- **The repo Documents page stops hardcoding one doc.** `app/routes/repos.js` builds a
+  single `specDoc` and `views/repo-documents.ejs` renders a single block; both become a
+  loop over the registry, so a newly registered type appears on the page without a view
+  edit. Without this the generalization stops one layer short of anything a user sees.
+
+Open / undecided for this phase:
+
+- **What happens to a job queued for a type that is disabled before the drain.** Skipping
+  it at drain is probably right, but "skipped" is not a `doc_jobs.status` value today, and
+  leaving it `queued` forever means it silently runs if the type is ever re-enabled,
+  against a trunk sha that has long since moved.
+- **Whether enablement needs to be per-repo, not just global.** A Security Analysis doc
+  may be wanted for three repos and pointless for thirty. Global is the smaller change and
+  the obvious first cut, but if per-repo is coming anyway, `doc_types_enabled` as a single
+  `app_settings` string is the wrong shape to grow from.
+- **Whether cadence should be per type.** Everything rides one nightly invocation. A
+  Security Analysis doc might reasonably want a different frequency than a Spec doc, which
+  reopens the Phase 15 mechanism question rather than settling it.
+- **Whether `repos.spec_doc_synced_commit_sha` is dropped or left in place** after the
+  backfill into `repo_doc_sync`. Leaving a stale, no-longer-written column is a trap for
+  the next reader; dropping it is the one genuinely irreversible step in the migration.
+- **No versioning or history.** Regeneration overwrites in place, inherited from Phase 8.
+  With more document types and a per-type model, "which model wrote the version I read
+  last week" becomes a question nobody can answer.
+
+- **Docs to update on implementation:**
+  - **[SPEC.md](SPEC.md)** — the `apex-doc-worker` row in the processes table (it
+    generates *documents*, plural, selected by an admin, not "its Spec/Communication
+    Protocol doc"); the data-model section's `repo_documents` and `spec_doc_jobs` bullets
+    (renamed table, new `doc_type` column, new `repo_doc_sync` table, ENUM→VARCHAR on both
+    `doc_type` and `call_site` — note *why*, or the next reader re-adds an ENUM); and the
+    CO-lifecycle step 6 sentence describing doc regen as a single whole-repo summary.
+  - **[apex_nim_integration.md](apex_nim_integration.md)** — the heaviest lift. "The four
+    call sites" is structurally wrong after this: call site 4 is no longer *a* call site
+    but a registry of them sharing one code path, and the count stops being fixed. The
+    "Which model gets stamped depends on who asked for the work" table needs the per-type
+    model rows. Call site 4's "the one call site where file selection is not model-driven"
+    claim now describes the spec-doc *entry*, not the mechanism.
+  - **[apex_troubleshooting.md](apex_troubleshooting.md)** — "Spec/Communication Protocol
+    doc not updating" needs a new *first* check ("is that document type enabled on
+    `/admin/documents`?"), which will be the most common cause of this symptom once a
+    toggle exists, and its step 2/3 references to `repos.spec_doc_synced_commit_sha` and
+    `spec_doc_jobs` need the new table names. The section title should generalize.
+  - **[README.md](README.md)** — the project-structure list: `docTypes.js` and the new
+    admin route/view.
+  - **[docs/docker-usage.md](docs/docker-usage.md)** — the `apex-doc-worker` description,
+    same generalization as SPEC.md's.
+  - **[undecided_topics.md](undecided_topics.md)** — whichever of the open questions above
+    ship unresolved.
+
+### Implementation notes
+
+Built as designed. Two of the open questions above were closed in the build:
+
+- **A job for a disabled type ends `skipped`**, a new terminal value on
+  `doc_jobs.status`. Leaving it `queued` would make it run the moment the type was ever
+  re-enabled, against a trunk sha long since moved; and the next scan after re-enabling
+  re-finds the repo with the current sha anyway, so nothing is lost by dropping it.
+- **`repos.spec_doc_synced_commit_sha` is kept, not dropped** — frozen, read only by the
+  backfill, and commented as such in `db/schema.sql`. Dropping it is the one genuinely
+  irreversible step in a migration that is otherwise fully replayable, and the trap it
+  sets for the next reader is cheaper than that.
+
+Two design details worth recording, neither of which was in the plan:
+
+- **`key` and `docType` are separate registry fields**, and `doc_jobs.doc_type` /
+  `repo_doc_sync.doc_type` store the *key* while `repo_documents.doc_type` stores
+  `docType`. They are equal for the spec entry, but `repo_documents` also holds
+  `requirements_log` rows this registry does not generate, so the two namespaces are not
+  guaranteed to stay in step and collapsing them would couple the registry to a table it
+  does not own.
+- **The spec entry's `callSite` stays `'spec_doc'`** rather than deriving from `key`.
+  Deriving it would have split one document type's spend history in two on
+  `/admin/usage` at the migration boundary.
+
+Deviation from the plan: the nav entry went into
+`views/admin/partials/nav.ejs`, not `views/partials/head.ejs`. The only admin links in
+`head.ejs` are the lock banner's fix-it links ("Add a model" is one of them), which are
+conditional on a lock being engaged — not a nav. `nav.ejs` is the actual admin nav.
+
+### Files
+
+Added: `app/lib/documents/docTypes.js` (the registry),
+`app/lib/documents/docSettings.js` (enablement), `app/routes/admin/documents.js`,
+`views/admin/documents.ejs`.
+
+Changed, beyond the obvious: `modelCatalog` (`resolveForSpecDocs`/`getSpecDocModelSetting`/
+`setSpecDocModel` → per-type `resolveForDocType`/`getDocModelSetting`/`setDocModel`;
+`countReferences` now counts `doc_jobs` as `activeDocJobs`), `docService` (generic over a
+registry entry; `generateForRepo` → `generateForJob`), `docScanService` (per-type plans,
+one trunk fetch per repo, prune removed), `docWorker` (owns `repoMap.pruneUnused`),
+`repoMap` (comment only), `app/routes/repos.js` + `views/repo-documents.ejs` (one query
+and a registry loop instead of a hardcoded doc), `app/routes/admin/models.js` +
+`views/admin/models.ejs` (spec-doc model section removed, pointer added).
+
+### Verification
+
+Driven against the running stack and a real MariaDB, not only unit-level.
+
+Migration, in a throwaway database seeded with pre-Phase-23 data (three repos with mixed
+`spec_doc_synced_commit_sha`, `completed`/`queued`/`failed` `spec_doc_jobs`, a
+`spec_doc_model_id` setting, `repo_documents` and `usage_events` rows): the rename
+preserved every row, `doc_type` backfilled and its temporary default dropped, both ENUMs
+widened in place, the index and FK renamed, `repo_doc_sync` backfilled (skipping the NULL
+repo), and the model setting moved to `doc_model_id:<key>` with the old key deleted.
+Replayed twice more after mutating `repo_doc_sync` and the setting — no clobber, no
+error. A fresh install produced DDL byte-identical to the upgraded database (modulo the
+`AUTO_INCREMENT` counter).
+
+Behavior, over real HTTP against a real app process: `/admin/documents` renders and
+toggles, an empty POST stores `''` (distinct from the unset default), the audit rows
+carry the turned-on/turned-off delta, an unknown type key is rejected, and the per-type
+model select round-trips. The scan/drain was exercised with `githubApi.getBranch` and
+`modelAdapter.generate` stubbed: jobs enqueued per `(repo, type)`, a second scan
+enqueued nothing (in-flight check), the drain generated and upserted, wrote
+`repo_doc_sync` and billed `usage_events` under the registry's call site, and a third
+scan found nothing stale. With the type disabled, `docWorker.js` skipped its queued job
+to `skipped`, logged why, and still ran the map prune — and the repo's Documents page
+kept rendering the already-generated content, confirming disabling never deletes.
+
+The phase's own acceptance test was run explicitly: a second document type was added as
+**one new file plus one line in `DOC_TYPES`**, with no schema change and no edit to
+`docWorker.js`, `docService.js`, `docScanService.js`, the admin page or the repo page. It
+appeared on `/admin/documents` (unchecked — new types are opt-in), generated through the
+same scan/drain, rendered on the repo's Documents page, and billed under its own
+`call_site` on `/admin/usage`. The probe was then removed.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

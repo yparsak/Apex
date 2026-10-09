@@ -17,6 +17,7 @@ router.use('/alerts', require('./alerts'));
 router.use('/locks', require('./locks'));
 router.use('/usage', require('./usage'));
 router.use('/models', require('./models'));
+router.use('/documents', require('./documents'));
 router.use('/maintenance', require('./maintenance'));
 
 module.exports = router;

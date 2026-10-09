@@ -368,7 +368,10 @@ async function getMap(repoId, owner, repoName, ref) {
 }
 
 // pruneUnused(days) - drops maps nothing has asked for in `days`. Rides Phase
-// 15's nightly trunk scanner rather than inventing a second schedule. Keyed on
+// 15's nightly docWorker.js invocation rather than inventing a second schedule
+// - called from its main(), deliberately not from the trunk scan it used to sit
+// inside (see ROADMAP.md Phase 23: once every document type can be disabled, a
+// prune riding the scan stops the moment the last one is unchecked). Keyed on
 // last use, not on whether the sha is still a branch head, because a map for an
 // in-flight DEV branch is exactly the one worth keeping.
 async function pruneUnused(days = 14) {

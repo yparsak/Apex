@@ -102,7 +102,11 @@ make clean      # full reset - also removes the data volume and network
   - `lib/pipeline/rangedWrite.js` — the anchored-write protocol: parse a line-range
     edit, verify its anchor against the file, splice or refuse.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
-- `docWorker.js` — Spec/Communication Protocol doc regeneration and repo-file-map
-  retirement, run nightly via cron.
+- `docWorker.js` — generated-document regeneration and repo-file-map retirement, run
+  nightly via cron. Which documents it writes comes from
+  `app/lib/documents/docTypes.js`, the document-type registry, filtered by what an admin
+  has enabled on `/admin/documents` (`app/routes/admin/documents.js`,
+  `views/admin/documents.ejs`). Adding a document type is a new file plus a line in that
+  registry.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.

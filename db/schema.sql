@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS repos (
   name VARCHAR(255) NOT NULL,
   description VARCHAR(500) NULL,
   default_branch_name VARCHAR(255) NOT NULL DEFAULT 'main',
+  -- Superseded by the repo_doc_sync table in Phase 23 and no longer read or
+  -- written by any code. Kept, not dropped: the backfill below reads it, and
+  -- dropping a column is the one genuinely irreversible step in that migration
+  -- (see undecided_topics.md). Treat it as frozen history, not current state.
   spec_doc_synced_commit_sha VARCHAR(40) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
@@ -296,10 +300,15 @@ CREATE TABLE IF NOT EXISTS lock_contention_events (
 -- ---------------------------------------------------------------------------
 
 -- co_number = '' is the sentinel for the repo-level (not per-CO) document.
+--
+-- doc_type is a VARCHAR, deliberately not an ENUM (it was one until Phase 23):
+-- document types are a code-level registry (app/lib/documents/docTypes.js), so
+-- an ENUM would make every new type a DDL change - exactly the coupling that
+-- phase exists to remove. Do not "tidy" this back into an ENUM.
 CREATE TABLE IF NOT EXISTS repo_documents (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   repo_id INT UNSIGNED NOT NULL,
-  doc_type ENUM('requirements_log', 'spec_communication_protocol') NOT NULL,
+  doc_type VARCHAR(50) NOT NULL,
   co_number VARCHAR(9) NOT NULL DEFAULT '',
   content LONGTEXT NOT NULL,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -309,16 +318,53 @@ CREATE TABLE IF NOT EXISTS repo_documents (
   CONSTRAINT fk_repo_documents_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE TABLE IF NOT EXISTS spec_doc_jobs (
+-- Phase 23 renamed spec_doc_jobs -> doc_jobs (the rename deferred during the
+-- docWorker rename, folded in while the table was gaining a column anyway).
+-- Renaming BEFORE the CREATE below is what makes the pair idempotent: on an
+-- upgraded database the rename moves the real table with its rows and the
+-- CREATE is a no-op, and on a replay (or a fresh install) the rename finds
+-- nothing and the CREATE builds the final shape. Reversing the two would leave
+-- an empty doc_jobs alongside the populated spec_doc_jobs.
+--
+-- MariaDB's ALTER TABLE IF EXISTS is what buys the guard; plain RENAME TABLE
+-- has no IF EXISTS and would hard-fail the whole migration on every replay.
+ALTER TABLE IF EXISTS spec_doc_jobs RENAME TO doc_jobs;
+
+CREATE TABLE IF NOT EXISTS doc_jobs (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   repo_id INT UNSIGNED NOT NULL,
-  status ENUM('queued', 'running', 'completed', 'failed') NOT NULL DEFAULT 'queued',
+  -- A docTypes.js registry key, not a repo_documents.doc_type value - see the
+  -- key/docType note in that module. No FK is possible: the thing it points at
+  -- is a module, not a table.
+  doc_type VARCHAR(50) NOT NULL,
+  -- 'skipped' is terminal and set at drain time for a job whose type was
+  -- disabled or de-registered after it was queued (see docService.js). Leaving
+  -- such a job 'queued' instead would make it run - against a long-stale trunk
+  -- sha - the moment the type was ever re-enabled.
+  status ENUM('queued', 'running', 'completed', 'failed', 'skipped') NOT NULL DEFAULT 'queued',
   trunk_commit_sha VARCHAR(40) NULL,
+  model VARCHAR(100) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_spec_doc_jobs_repo (repo_id),
-  CONSTRAINT fk_spec_doc_jobs_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+  -- (repo_id, doc_type) because the in-flight check is per pair now. repo_id
+  -- leads, so this also satisfies the FK below without a second index.
+  KEY idx_doc_jobs_repo_type (repo_id, doc_type),
+  CONSTRAINT fk_doc_jobs_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Which trunk sha each document type was last generated against, per repo.
+-- Supersedes repos.spec_doc_synced_commit_sha (Phase 23): staleness is per
+-- document type, not per repo - a Code Review doc and a Spec doc go stale
+-- independently, and one column can only ever track one of them.
+CREATE TABLE IF NOT EXISTS repo_doc_sync (
+  repo_id INT UNSIGNED NOT NULL,
+  doc_type VARCHAR(50) NOT NULL,
+  synced_commit_sha VARCHAR(40) NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (repo_id, doc_type),
+  CONSTRAINT fk_repo_doc_sync_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
@@ -331,7 +377,11 @@ CREATE TABLE IF NOT EXISTS spec_doc_jobs (
 -- see ROADMAP.md Phase 14.
 CREATE TABLE IF NOT EXISTS usage_events (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  call_site ENUM('overlap_check', 'clarification', 'codegen', 'spec_doc') NOT NULL,
+  -- VARCHAR, not an ENUM (it was one until Phase 23): the document call sites
+  -- come from the docTypes.js registry, and a new document type has to be able
+  -- to bill itself without a migration. 'overlap_check', 'clarification',
+  -- 'codegen' and 'spec_doc' are the values in use today.
+  call_site VARCHAR(50) NOT NULL,
   session_id INT UNSIGNED NULL,
   repo_id INT UNSIGNED NULL,
   provider VARCHAR(50) NOT NULL,
@@ -477,15 +527,26 @@ CREATE TABLE IF NOT EXISTS models (
 --
 --   maintenance_locked  '1'/'0'  - the admin maintenance lock (app/lib/appLock.js)
 --   maintenance_message TEXT     - the message shown to locked-out users
---   spec_doc_model_id   models.id as a string, or '' for "use the catalog
---                                default" - which model generates Spec/
---                                Communication Protocol docs, the one model
---                                call with no requesting user to inherit a
---                                preference from (app/lib/model/modelCatalog.js)
+--   doc_types_enabled   comma-separated docTypes.js registry keys - which
+--                                document types the nightly worker generates
+--                                (app/lib/documents/docSettings.js). A MISSING
+--                                row and an EMPTY one mean different things:
+--                                missing is "never configured" and enables the
+--                                pre-Phase-23 set, empty is an admin choosing
+--                                to generate nothing.
+--   doc_model_id:<key>  models.id as a string, or '' for "use the catalog
+--                                default" - which model generates that one
+--                                document type. One row per registry key
+--                                (Phase 23; was a single spec_doc_model_id in
+--                                Phase 22). Document generation is the one
+--                                model call with no requesting user to inherit
+--                                a preference from.
 --
--- Note that setting_value cannot carry a foreign key, so spec_doc_model_id can
--- dangle when the model it names is deleted; modelCatalog.resolveForSpecDocs
--- re-validates it on every read and falls back rather than failing.
+-- Note that setting_value cannot carry a foreign key, so a doc_model_id:<key>
+-- can dangle when the model it names is deleted; modelCatalog.resolveForDocType
+-- re-validates it on every read and falls back rather than failing. The same
+-- goes for doc_types_enabled naming a key no longer in the registry, which
+-- docSettings.js ignores on read.
 CREATE TABLE IF NOT EXISTS app_settings (
   setting_key VARCHAR(100) NOT NULL,
   setting_value TEXT NULL,
@@ -519,7 +580,7 @@ ALTER TABLE users ADD CONSTRAINT fk_users_preferred_model
 -- switch models between pipeline turns.
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER resume_requested;
 ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER container_id;
-ALTER TABLE spec_doc_jobs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER trunk_commit_sha;
+ALTER TABLE doc_jobs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER trunk_commit_sha;
 
 -- The circuit breaker was keyed on provider alone, which was fine when one
 -- deployment meant one model: with several models behind the same NIM endpoint,
@@ -536,6 +597,66 @@ ALTER TABLE spec_doc_jobs ADD COLUMN IF NOT EXISTS model VARCHAR(100) NULL AFTER
 -- silently releasing a live lock on the one upgrade where it mattered.
 ALTER TABLE model_provider_health ADD COLUMN IF NOT EXISTS model VARCHAR(100) NOT NULL DEFAULT '' AFTER provider;
 ALTER TABLE model_provider_health DROP PRIMARY KEY, ADD PRIMARY KEY (provider, model);
+
+-- ---------------------------------------------------------------------------
+-- Phase 23: pluggable document types
+--
+-- Everything here is an upgrade path for a database created before Phase 23;
+-- on a fresh install every statement is a no-op, because the CREATE TABLE
+-- definitions above already describe the end state.
+-- ---------------------------------------------------------------------------
+
+-- ENUM -> VARCHAR on both columns that name a document type or its call site.
+-- A new document type is a new file in app/lib/documents/docTypes.js; it must
+-- not also be a schema change. MODIFY COLUMN is naturally idempotent (it
+-- restates the target type), and widening an ENUM to a VARCHAR preserves every
+-- existing row's label verbatim.
+ALTER TABLE repo_documents MODIFY COLUMN doc_type VARCHAR(50) NOT NULL;
+ALTER TABLE usage_events MODIFY COLUMN call_site VARCHAR(50) NOT NULL;
+
+-- doc_jobs gained doc_type and a 'skipped' status. The DEFAULT is only there to
+-- backfill pre-Phase-23 rows (all of which were spec docs - it was the only
+-- type) and is dropped immediately after, so an upgraded database ends up with
+-- the same column definition as a fresh one. Leaving the default in place would
+-- be worse than cosmetic drift: an INSERT that forgot doc_type would silently
+-- enqueue a spec-doc job instead of failing.
+ALTER TABLE doc_jobs
+  ADD COLUMN IF NOT EXISTS doc_type VARCHAR(50) NOT NULL DEFAULT 'spec_communication_protocol' AFTER repo_id;
+ALTER TABLE doc_jobs ALTER COLUMN doc_type DROP DEFAULT;
+ALTER TABLE doc_jobs
+  MODIFY COLUMN status ENUM('queued', 'running', 'completed', 'failed', 'skipped') NOT NULL DEFAULT 'queued';
+
+-- The index and FK survived the table rename under their old names. Order
+-- matters: InnoDB refuses to drop an index a foreign key still needs, so the
+-- FK goes first and comes back last.
+ALTER TABLE doc_jobs DROP FOREIGN KEY IF EXISTS fk_spec_doc_jobs_repo;
+ALTER TABLE doc_jobs DROP INDEX IF EXISTS idx_spec_doc_jobs_repo;
+ALTER TABLE doc_jobs ADD INDEX IF NOT EXISTS idx_doc_jobs_repo_type (repo_id, doc_type);
+ALTER TABLE doc_jobs ADD CONSTRAINT fk_doc_jobs_repo FOREIGN KEY IF NOT EXISTS (repo_id) REFERENCES repos (id);
+
+-- Backfill repo_doc_sync from the column it supersedes. ON DUPLICATE KEY keeps
+-- the EXISTING row rather than overwriting it: once the new table is being
+-- written, repos.spec_doc_synced_commit_sha is frozen at whatever it held on
+-- upgrade day, and a later replay of this file must not resurrect that stale
+-- sha over a current one (which would make the scan regenerate every spec doc).
+INSERT INTO repo_doc_sync (repo_id, doc_type, synced_commit_sha)
+  SELECT id, 'spec_communication_protocol', spec_doc_synced_commit_sha
+  FROM repos WHERE spec_doc_synced_commit_sha IS NOT NULL
+  ON DUPLICATE KEY UPDATE synced_commit_sha = repo_doc_sync.synced_commit_sha;
+
+-- The Phase 22 single-model setting becomes the spec type's per-type setting.
+-- Selected through a derived table because MariaDB will not let an
+-- INSERT ... SELECT read the table it is inserting into directly. Same
+-- keep-the-existing-row rule as above, so a replay cannot clobber a model an
+-- admin has since changed; then the old key is removed so nothing reads it
+-- again.
+INSERT INTO app_settings (setting_key, setting_value, updated_by_user_id)
+  SELECT * FROM (
+    SELECT 'doc_model_id:spec_communication_protocol' AS k, setting_value AS v, updated_by_user_id AS u
+    FROM app_settings WHERE setting_key = 'spec_doc_model_id'
+  ) AS legacy
+  ON DUPLICATE KEY UPDATE setting_value = app_settings.setting_value;
+DELETE FROM app_settings WHERE setting_key = 'spec_doc_model_id';
 
 -- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is

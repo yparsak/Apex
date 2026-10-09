@@ -1,0 +1,90 @@
+<%- include('../partials/head', { title: 'Admin - Documents', user: user }) %>
+  <main class="content admin-content">
+    <%- include('partials/nav', { active: 'documents' }) %>
+    <h1>Documents</h1>
+    <% if (error) { %><p class="error"><%= error %></p><% } %>
+
+    <p class="placeholder">
+      The documents Apex generates for every repo, overnight, whenever that repo's trunk
+      has moved. Each one can be turned off independently and given its own model — these
+      jobs run unattended with no user behind them to inherit a model choice from, so it
+      is set here rather than picked per run.
+    </p>
+    <p class="placeholder">
+      Turning a document off stops it being regenerated. It does not delete anything: what
+      has already been written stays readable on each repo's Documents page, frozen at the
+      last version generated.
+    </p>
+
+    <%
+      var enabledModels = models.filter(function(m) { return m.enabled; });
+    %>
+
+    <form method="POST" action="/admin/documents/enabled">
+      <table class="admin-table">
+        <thead><tr><th>Generate</th><th>Document</th><th>Model</th></tr></thead>
+        <tbody>
+          <% types.forEach(function(t) { %>
+          <tr>
+            <td>
+              <input type="checkbox" name="doc_type_key" value="<%= t.key %>"
+                     id="enable-<%= t.key %>" <%= t.enabled ? 'checked' : '' %>>
+            </td>
+            <td>
+              <label for="enable-<%= t.key %>"><strong><%= t.label %></strong></label>
+              <p class="placeholder"><%= t.description %></p>
+            </td>
+            <%# Read-only here; the selects live in their own forms below, since a
+                form nested inside this one would be invalid HTML and the two are
+                separately auditable decisions anyway. %>
+            <td>
+              <% if (!t.effectiveModel) { %>
+                <span class="error">No model available</span>
+              <% } else { %>
+                <%= t.effectiveModel.display_name %>
+              <% } %>
+              <% if (t.usedFallback) { %>
+                <p class="error">
+                  The model configured for this document is no longer available (disabled or
+                  deleted), so the catalog default is being used instead. Pick a model below
+                  to make the choice explicit again.
+                </p>
+              <% } %>
+            </td>
+          </tr>
+          <% }) %>
+        </tbody>
+      </table>
+      <button type="submit">Save which documents are generated</button>
+    </form>
+
+    <% if (orphanedKeys.length) { %>
+      <p class="error">
+        Enabled but no longer available in this build of Apex:
+        <%= orphanedKeys.join(', ') %>. Nothing is generated for these. Save the form above
+        to drop them from the list.
+      </p>
+    <% } %>
+
+    <h2>Model per document</h2>
+    <% if (!enabledModels.length) { %>
+      <p class="placeholder">Add and enable a model on the Models page first.</p>
+    <% } else { %>
+      <% types.forEach(function(t) { %>
+        <form method="POST" action="/admin/documents/<%= t.key %>/model" class="stacked-form">
+          <label><%= t.label %>
+            <select name="model_id">
+              <option value="" <%= t.configuredModelId ? '' : 'selected' %>>
+                Use the catalog default<%= t.effectiveModel && !t.configuredModelId ? ' (' + t.effectiveModel.display_name + ')' : '' %>
+              </option>
+              <% enabledModels.forEach(function(m) { %>
+                <option value="<%= m.id %>" <%= t.configuredModelId === m.id ? 'selected' : '' %>><%= m.display_name %></option>
+              <% }) %>
+            </select>
+          </label>
+          <button type="submit">Save</button>
+        </form>
+      <% }) %>
+    <% } %>
+  </main>
+<%- include('../partials/foot') %>

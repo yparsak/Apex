@@ -1,53 +1,22 @@
-// Generates the Spec/Communication Protocol doc: a repo-level (co_number=''
-// sentinel) document, fully regenerated each time trunk moves rather than
-// incrementally patched (see ROADMAP.md Phase 8). Drained by
-// docWorker.js, not worker.js - see docScanService.js for why.
+// Generates registry-driven, repo-level documents (co_number='' sentinel),
+// fully regenerated each time trunk moves rather than incrementally patched
+// (see ROADMAP.md Phase 8). Drained by docWorker.js, not worker.js - see
+// docScanService.js for why.
+//
+// Everything type-specific - which files go into the prompt, what the prompt
+// says, what the document is called - lives in docTypes.js (see ROADMAP.md
+// Phase 23). What stays here is the job mechanics every type shares: model
+// resolution, the generate call, the usage_events write, the repo_documents
+// upsert, the sync-sha write, and the one-try/catch-per-job drain loop.
 const db = require('../db');
 const modelAdapter = require('../model/modelAdapter');
 const usageService = require('../model/usageService');
 const modelCatalog = require('../model/modelCatalog');
-const repoContext = require('../repoContext');
+const docTypes = require('./docTypes');
+const docSettings = require('./docSettings');
 const { processLogger } = require('../logger');
 
-// A hardcoded allowlist, which is why this doc is thin for a large repo - it
-// is written from packaging metadata and a readme. Phase 20's size-aware map
-// makes a map-driven selection possible here, but doing it changes generated
-// doc content, which is Phase 15's concern and wants its own before/after
-// review (see ROADMAP.md Phase 20).
-const KEY_FILES = ['README.md', 'package.json', 'apex.pipeline.json'];
-
-const SYSTEM_PROMPT = [
-  "You are Apex's documentation agent. Write a concise Spec / Communication Protocol",
-  'document for this repo, for engineers on other teams who integrate with it but do not',
-  "work in its codebase day to day. Cover what the repo does, its overall structure, how",
-  'to build/test/run it, and its integration surface (APIs it exposes, services it',
-  'depends on, message formats) - whatever is actually evident from the material below.',
-  'Do not invent details that are not supported by it.',
-  '',
-  'Respond with the complete document in Markdown, and nothing else.',
-].join('\n');
-
-async function buildContext(org, repo, branchName) {
-  const tree = await repoContext.fetchTree(org, repo, branchName);
-
-  // A key file clipped at the read cap is labelled as clipped, same as every
-  // other reader (see ROADMAP.md Phase 19) - a doc written from the first 8000
-  // characters of a long README, presented as the whole thing, describes a repo
-  // that doesn't exist. A read that fails or comes back oversized is skipped
-  // rather than blocking doc generation, which is this call site's existing
-  // degrade-don't-block posture.
-  const fileBlocks = [];
-  for (const path of KEY_FILES) {
-    if (!tree.paths.includes(path)) continue;
-    const record = await repoContext.readFileForModel(org.name, repo.name, path, branchName);
-    if (record.status !== 'ok') continue;
-    fileBlocks.push(repoContext.formatFileForModel(path, record));
-  }
-
-  return `=== FILE TREE ===\n${repoContext.renderTree(tree)}\n\n${fileBlocks.join('\n\n')}`;
-}
-
-async function generateForRepo(job) {
+async function generateForJob(job, docType) {
   const [[repo]] = await db.query(
     `SELECT r.*, o.name AS org_name FROM repos r
      JOIN repo_groups rg ON rg.id = r.repo_group_id
@@ -74,10 +43,10 @@ async function generateForRepo(job) {
     model = fallback.model_id;
   }
 
-  const context = await buildContext(org, repo, repo.default_branch_name);
+  const context = await docType.buildContext(org, repo, repo.default_branch_name);
   const result = await modelAdapter.generate(
     [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: docType.systemPrompt },
       { role: 'user', content: context },
     ],
     { model }
@@ -88,7 +57,7 @@ async function generateForRepo(job) {
   // per-CO, record in this codebase.
   usageService
     .recordUsage({
-      callSite: 'spec_doc',
+      callSite: docType.callSite,
       sessionId: null,
       repoId: repo.id,
       provider: result.provider,
@@ -99,25 +68,57 @@ async function generateForRepo(job) {
     .catch(() => {});
 
   await db.query(
-    `INSERT INTO repo_documents (repo_id, doc_type, co_number, content) VALUES (?, 'spec_communication_protocol', '', ?)
+    `INSERT INTO repo_documents (repo_id, doc_type, co_number, content) VALUES (?, ?, '', ?)
      ON DUPLICATE KEY UPDATE content = VALUES(content)`,
-    [repo.id, content]
+    [repo.id, docType.docType, content]
   );
-  await db.query('UPDATE repos SET spec_doc_synced_commit_sha = ? WHERE id = ?', [job.trunk_commit_sha, repo.id]);
+  // Per (repo, type), not per repo: two types go stale independently, and the
+  // single repos.spec_doc_synced_commit_sha column it replaced could only ever
+  // track one of them (see ROADMAP.md Phase 23).
+  await db.query(
+    `INSERT INTO repo_doc_sync (repo_id, doc_type, synced_commit_sha) VALUES (?, ?, ?)
+     ON DUPLICATE KEY UPDATE synced_commit_sha = VALUES(synced_commit_sha)`,
+    [repo.id, docType.key, job.trunk_commit_sha]
+  );
 }
 
 // drainQueuedJobs() - processes every currently-queued job, one at a time,
 // each in its own try/catch so one repo's failure doesn't stop the rest.
 async function drainQueuedJobs() {
-  const [jobs] = await db.query("SELECT * FROM spec_doc_jobs WHERE status = 'queued' ORDER BY id ASC");
+  const [jobs] = await db.query("SELECT * FROM doc_jobs WHERE status = 'queued' ORDER BY id ASC");
+  if (!jobs.length) return;
+
+  // Read once for the whole drain rather than per job: it cannot change
+  // mid-drain (this is a one-shot process), and per-job reads would be one
+  // query per queued job for an identical answer.
+  const enabledKeys = new Set(await docSettings.getEnabledKeys());
+
   for (const job of jobs) {
-    await db.query("UPDATE spec_doc_jobs SET status = 'running' WHERE id = ?", [job.id]);
+    const docType = docTypes.get(job.doc_type);
+
+    // A type disabled (or de-registered) between the scan that queued this job
+    // and now. Terminal 'skipped' rather than left 'queued': a job left queued
+    // would silently run whenever the type is re-enabled, generating against a
+    // trunk sha that may be months stale, and the next scan after re-enabling
+    // re-finds the repo anyway with the current sha. Nothing is lost by
+    // dropping it, and a status an admin can see beats a job that quietly
+    // resurrects.
+    if (!docType || !enabledKeys.has(job.doc_type)) {
+      await db.query("UPDATE doc_jobs SET status = 'skipped' WHERE id = ?", [job.id]);
+      processLogger().info(
+        { jobId: job.id, repoId: job.repo_id, docType: job.doc_type },
+        'doc job skipped - document type is disabled or no longer registered'
+      );
+      continue;
+    }
+
+    await db.query("UPDATE doc_jobs SET status = 'running' WHERE id = ?", [job.id]);
     try {
-      await generateForRepo(job);
-      await db.query("UPDATE spec_doc_jobs SET status = 'completed' WHERE id = ?", [job.id]);
+      await generateForJob(job, docType);
+      await db.query("UPDATE doc_jobs SET status = 'completed' WHERE id = ?", [job.id]);
     } catch (err) {
-      await db.query("UPDATE spec_doc_jobs SET status = 'failed' WHERE id = ?", [job.id]);
-      processLogger().error({ jobId: job.id, repoId: job.repo_id, err }, 'spec doc job failed');
+      await db.query("UPDATE doc_jobs SET status = 'failed' WHERE id = ?", [job.id]);
+      processLogger().error({ jobId: job.id, repoId: job.repo_id, docType: job.doc_type, err }, 'doc job failed');
     }
   }
 }

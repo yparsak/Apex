@@ -11,21 +11,11 @@ const { logAdminAction } = require('../../lib/adminAudit');
 const router = express.Router();
 
 async function renderModels(req, res, error) {
-  const [models, specDocModelId, specDoc] = await Promise.all([
-    modelCatalog.listAll(),
-    modelCatalog.getSpecDocModelSetting(),
-    modelCatalog.resolveForSpecDocs(),
-  ]);
+  const models = await modelCatalog.listAll();
   res.render('admin/models', {
     user: req.session.user,
     models,
     providers: providerRegistry.listProviders(),
-    // What is configured vs. what is actually in effect - they differ when the
-    // configured model has since been disabled or deleted, and the screen has
-    // to say so rather than just showing the fallback as if it were the choice.
-    specDocModelId,
-    specDocEffective: specDoc.model,
-    specDocUsedFallback: specDoc.usedFallback,
     error,
   });
 }
@@ -63,42 +53,6 @@ function parseForm(body) {
 
 router.get('/', async (req, res) => {
   await renderModels(req, res, null);
-});
-
-// Declared ahead of the '/:id/...' routes below. They all have a second path
-// segment so there is no actual collision today, but a bare '/:id' added later
-// would swallow this one.
-//
-// Unattended, repo-level doc generation has no requesting user whose preference
-// it could inherit, so before this it was pinned to the catalog default - the
-// same model interactive codegen uses. Spec docs run nightly across every stale
-// repo and are a reasonable thing to put on a cheaper model.
-router.post('/spec-doc-model', async (req, res) => {
-  const raw = (req.body.model_id || '').trim();
-
-  // Empty means "follow the catalog default" - a real choice, not a blank
-  // submission, so it is accepted rather than validated against the catalog.
-  if (!raw) {
-    await modelCatalog.setSpecDocModel(null, req.session.user.id);
-    await logAdminAction({
-      adminUserId: req.session.user.id,
-      action: 'model.set_spec_doc_model',
-      detail: { modelId: null },
-    });
-    return res.redirect('/admin/models');
-  }
-
-  const model = await modelCatalog.getById(Number(raw));
-  if (!model) return renderModels(req, res, 'That model no longer exists.');
-  if (!model.enabled) return renderModels(req, res, 'Enable the model before using it for spec documents.');
-
-  await modelCatalog.setSpecDocModel(model.id, req.session.user.id);
-  await logAdminAction({
-    adminUserId: req.session.user.id,
-    action: 'model.set_spec_doc_model',
-    detail: { modelId: model.id, model: model.model_id },
-  });
-  res.redirect('/admin/models');
 });
 
 router.post('/', async (req, res) => {
@@ -141,12 +95,12 @@ router.post('/:id/update', async (req, res) => {
   // identity is load-bearing.
   if (values.modelId !== existing.model_id) {
     const refs = await modelCatalog.countReferences(existing.model_id);
-    if (refs.activeSessions > 0 || refs.activeSpecDocJobs > 0) {
+    if (refs.activeSessions > 0 || refs.activeDocJobs > 0) {
       return renderModels(
         req,
         res,
         `Cannot change the Model ID of "${existing.display_name}": ${refs.activeSessions} unfinished session(s) ` +
-          `and ${refs.activeSpecDocJobs} spec-doc job(s) are stamped with "${existing.model_id}" and would be ` +
+          `and ${refs.activeDocJobs} document job(s) are stamped with "${existing.model_id}" and would be ` +
           'orphaned. Add a new model instead, or wait for that work to finish.'
       );
     }
@@ -203,7 +157,7 @@ router.post('/:id/default', async (req, res) => {
   res.redirect('/admin/models');
 });
 
-// sessions.model / spec_doc_jobs.model / usage_events.model are plain VARCHARs
+// sessions.model / doc_jobs.model / usage_events.model are plain VARCHARs
 // rather than FKs (so history survives a catalog change - see db/schema.sql),
 // which means the database will not raise ER_ROW_IS_REFERENCED_2 on our behalf
 // the way it does for every other admin delete here. This is the hand-rolled
@@ -219,12 +173,12 @@ router.post('/:id/delete', async (req, res) => {
   if (!model) return res.redirect('/admin/models');
 
   const refs = await modelCatalog.countReferences(model.model_id);
-  if (refs.activeSessions > 0 || refs.activeSpecDocJobs > 0) {
+  if (refs.activeSessions > 0 || refs.activeDocJobs > 0) {
     return renderModels(
       req,
       res,
       `Cannot delete "${model.display_name}": ${refs.activeSessions} unfinished session(s) and ` +
-        `${refs.activeSpecDocJobs} spec-doc job(s) are still using it. Disable it instead, or wait for them to finish.`
+        `${refs.activeDocJobs} document job(s) are still using it. Disable it instead, or wait for them to finish.`
     );
   }
 

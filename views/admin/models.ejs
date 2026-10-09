@@ -93,39 +93,14 @@
       </table>
     <% } %>
 
-    <h2>Spec document model</h2>
+    <%# The per-document-type model selects moved to /admin/documents in Phase 23:
+        this page is the catalog (what models exist, what they cost), and which
+        model writes which document belongs with the rest of the document
+        settings. %>
     <p class="placeholder">
-      Which model generates the Spec / Communication Protocol docs. That job runs
-      unattended overnight across every repo whose trunk has moved, with no user behind it
-      to inherit a choice from — so it is set here rather than picked per run, and can sit
-      on a cheaper model than interactive codegen. Leave it on the catalog default to keep
-      the previous behaviour.
+      Unattended document generation has its own model choice, one per document type, on
+      <a href="/admin/documents">Documents</a>.
     </p>
-    <% if (!models.filter(function(m) { return m.enabled; }).length) { %>
-      <p class="placeholder">No enabled models to choose from yet.</p>
-    <% } else { %>
-      <% if (specDocUsedFallback) { %>
-        <p class="error">
-          The model configured here is no longer available (disabled or deleted). Spec documents
-          are being generated with
-          <strong><%= specDocEffective ? specDocEffective.display_name : 'no model' %></strong>
-          instead. Pick a model below to make the choice explicit again.
-        </p>
-      <% } %>
-      <form method="POST" action="/admin/models/spec-doc-model" class="stacked-form">
-        <label>Model
-          <select name="model_id">
-            <option value="" <%= specDocModelId ? '' : 'selected' %>>
-              Use the catalog default<%= specDocEffective && !specDocModelId ? ' (' + specDocEffective.display_name + ')' : '' %>
-            </option>
-            <% models.filter(function(m) { return m.enabled; }).forEach(function(m) { %>
-              <option value="<%= m.id %>" <%= specDocModelId === m.id ? 'selected' : '' %>><%= m.display_name %></option>
-            <% }) %>
-          </select>
-        </label>
-        <button type="submit">Save</button>
-      </form>
-    <% } %>
 
     <h2>New model</h2>
     <form method="POST" action="/admin/models" class="stacked-form">
