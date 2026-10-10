@@ -1,6 +1,7 @@
 require('dotenv').config();
 
 const appLock = require('./app/lib/appLock');
+const docDefinitions = require('./app/lib/documents/docDefinitions');
 const docScanService = require('./app/lib/documents/docScanService');
 const docService = require('./app/lib/documents/docService');
 const { initProcessLogger } = require('./app/lib/logger');
@@ -38,6 +39,20 @@ async function main() {
 
   if (lock.locked) {
     logger.warn({ reason: lock.reason }, 'app is locked - skipping document scan and drain');
+  } else if (!(await docDefinitions.listActive()).length) {
+    // Since Phase 24 there are no built-in document types, so "nothing to
+    // generate" is the state of every fresh install rather than a
+    // misconfiguration. info and exit 0, deliberately not a warning and not a
+    // non-zero status: a cron wrapper that pages someone the first morning
+    // after an install, for a system behaving exactly as designed, teaches
+    // people to ignore it.
+    //
+    // The drain still runs. With no active definition every queued job is
+    // skippable, and running it is one query that marks those jobs terminal
+    // instead of leaving them queued for a reactivation that would generate
+    // against a months-old sha (see docService.drainQueuedJobs).
+    logger.info('No Active Document to generate');
+    await docService.drainQueuedJobs();
   } else {
     await docScanService.scanForStaleRepos();
     await docService.drainQueuedJobs();

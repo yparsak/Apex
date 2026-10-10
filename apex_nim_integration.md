@@ -76,7 +76,7 @@ Which model gets stamped depends on who asked for the work:
 | Work | Model used |
 |---|---|
 | Clarification, overlap, codegen (`apex-worker`) | The requesting user's selection, stamped on the session when it was created. `/resume` reuses the failed run's own model. |
-| Any generated document (`docWorker.js`) | The model set for **that document type** on `/admin/documents` — one setting per registry entry (`doc_model_id:<key>`), so a Security Analysis doc can run on an expensive model while a Code Review doc runs on a cheap one. Each falls back to the catalog default when unset, or when the configured model has been disabled or deleted; the fallback is announced on the admin screen *and* logged by the nightly scan. The model is resolved once by the scan and stamped on the job, not re-read at drain time. |
+| Any generated document (`docWorker.js`) | The model set for **that document** on `/admin/documents`, stored on its own row as `doc_definitions.model_id`, so a Security Analysis doc can run on an expensive model while a Code Review doc runs on a cheap one. Each falls back to the catalog default when unset, or when the configured model has been disabled or deleted; the fallback is announced on the admin screen *and* logged by the nightly scan. The model is resolved once by the scan and stamped on the job, not re-read at drain time. |
 
 ### Request/response handling
 
@@ -448,17 +448,31 @@ would be keyed under — a push landing between the two lookups would otherwise 
 commit's outline under that commit's key, which this run wouldn't notice but a later
 clarification would.
 
-### 4. Generated documents — [docService.js](app/lib/documents/docService.js) over [docTypes.js](app/lib/documents/docTypes.js)
+### 4. Generated documents — [docService.js](app/lib/documents/docService.js) over [docContext.js](app/lib/documents/docContext.js)
 
 Runs during `docWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
-Phase 15), once per `(repo, enabled document type)` whose trunk has moved.
-`docService.js` owns only the mechanics shared by every type — model resolution, the
-`generate` call, the `usage_events` write, the `repo_documents` upsert, the
-`repo_doc_sync` write, and one try/catch per job. The prompt, the context and the
-billing call site come from the type's registry entry, so what follows describes the
-**Spec/Communication Protocol entry**, not the mechanism.
+Phase 15), once per `(repo, active document)` that has gone stale.
+`docService.js` owns only the mechanics shared by every document — model resolution, the
+`generate` call, the `usage_events` write (billed to `doc:<doc_key>`), the
+`repo_documents` upsert, the `repo_doc_sync` write, and one try/catch per job.
 
-That entry is **the one place where file selection is not model-driven**: there's no
+**The system prompt for this call site is not in the code.** Since Phase 24 there are no
+built-in document types: the system message is `doc_definitions.model_prompt`, a column
+an admin writes on `/admin/documents`, sent **verbatim** with no house template wrapped
+around it and nothing interpolated into it. This document claims to be the single source
+of truth for everything model-facing, and for this one call site that is no longer
+possible to honour — half of what the model is told lives in the database and varies per
+deployment. To read the actual prompt a deployment sends, read that column (or the
+`doc_definition.create`/`.update` rows in `admin_audit_log`, which are the only record of
+what it said at a given time). README.md carries the text of the prompt Apex *used* to
+ship with, for reproducing the old Spec/Communication Protocol document.
+
+What the model **reads** is still entirely code, and is identical for every document —
+that is the deliberate scope boundary: an admin controls what the model is told, not
+what it reads. There is no per-definition file list, and a definition asking for
+something the three files below cannot support will simply get a thin document.
+
+This is **the one place where file selection is not model-driven**: there's no
 `FETCH_FILE` loop here at all. Instead, Apex pre-selects a small fixed allowlist —
 
 ```
@@ -471,13 +485,14 @@ else — a doc written from the first 8,000 characters of a long README, present
 whole thing, describes a repo that doesn't exist), alongside the same size-aware file map
 every other call site uses. The allowlist stays hardcoded for now — a map-driven selection
 here would change generated doc content, which is Phase 15's concern and wants its own
-before/after review. The model is asked to synthesize a complete Markdown document
-from that material in one shot — the whole document is regenerated from scratch every
-time, never incrementally patched, so there's no prior-document state to feed back in.
+before/after review. The model is asked — by whatever the definition's prompt says — to
+synthesize a complete document from that material in one shot. The whole document is
+regenerated from scratch every time, never incrementally patched, so there's no
+prior-document state to feed back in.
 
-Another entry is free to do none of that: a type whose `buildContext` drives a
-`FETCH_FILE` loop, or feeds the full size-aware map, changes nothing outside its own
-file.
+Regeneration is triggered by `(trunk sha, prompt_revision)` differing from the
+`repo_doc_sync` row, so editing a prompt regenerates every repo's copy on the next
+nightly run even though nothing moved in git.
 
 ## Limits at a glance
 

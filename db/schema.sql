@@ -302,9 +302,12 @@ CREATE TABLE IF NOT EXISTS lock_contention_events (
 -- co_number = '' is the sentinel for the repo-level (not per-CO) document.
 --
 -- doc_type is a VARCHAR, deliberately not an ENUM (it was one until Phase 23):
--- document types are a code-level registry (app/lib/documents/docTypes.js), so
--- an ENUM would make every new type a DDL change - exactly the coupling that
--- phase exists to remove. Do not "tidy" this back into an ENUM.
+-- document types are admin-defined rows in doc_definitions (Phase 24), so an
+-- ENUM would make every new document a DDL change performed by an engineer -
+-- exactly the coupling those phases exist to remove. Do not "tidy" this back
+-- into an ENUM. It holds a doc_definitions.doc_key, except for the
+-- 'requirements_log' rows written inline by requirementsLogService.js, which
+-- no definition generates.
 CREATE TABLE IF NOT EXISTS repo_documents (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   repo_id INT UNSIGNED NOT NULL,
@@ -333,9 +336,12 @@ ALTER TABLE IF EXISTS spec_doc_jobs RENAME TO doc_jobs;
 CREATE TABLE IF NOT EXISTS doc_jobs (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   repo_id INT UNSIGNED NOT NULL,
-  -- A docTypes.js registry key, not a repo_documents.doc_type value - see the
-  -- key/docType note in that module. No FK is possible: the thing it points at
-  -- is a module, not a table.
+  -- A doc_definitions.doc_key. Deliberately NOT a foreign key to
+  -- doc_definitions.id (Phase 24): a job records which document it was queued
+  -- for, and that record has to survive the definition being archived - the
+  -- same reason doc_jobs.model is a plain string rather than a models FK. It
+  -- also means a key can name a definition that no longer exists, which
+  -- docService.js treats as a 'skipped' job rather than an error.
   doc_type VARCHAR(50) NOT NULL,
   -- 'skipped' is terminal and set at drain time for a job whose type was
   -- disabled or de-registered after it was queued (see docService.js). Leaving
@@ -361,10 +367,74 @@ CREATE TABLE IF NOT EXISTS repo_doc_sync (
   repo_id INT UNSIGNED NOT NULL,
   doc_type VARCHAR(50) NOT NULL,
   synced_commit_sha VARCHAR(40) NULL,
+  -- The doc_definitions.prompt_revision this row was generated under (Phase
+  -- 24). Staleness is (sha, revision), not sha alone: an admin who fixes a
+  -- prompt moves nothing in git, so a sha-only comparison would leave the
+  -- document frozen at the old prompt until trunk happened to move.
+  --
+  -- DEFAULT 1 matches doc_definitions.prompt_revision's own default, so a row
+  -- written before this column existed compares equal to a never-edited
+  -- definition and does NOT trigger a regeneration of everything on upgrade.
+  synced_prompt_revision INT NOT NULL DEFAULT 1,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (repo_id, doc_type),
   CONSTRAINT fk_repo_doc_sync_repo FOREIGN KEY (repo_id) REFERENCES repos (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- The document-type registry (Phase 24). This was app/lib/documents/docTypes.js
+-- until this phase - a module with one hardcoded entry - and every document
+-- that exists is now a row an admin wrote on /admin/documents. A fresh install
+-- has none, and generates nothing until someone creates one; that is the
+-- intended state, not a misconfiguration (see docWorker.js).
+--
+-- NOTHING here is seeded. The Spec/Communication Protocol document that used to
+-- be the single built-in type is reproduced by pasting the title, description
+-- and prompt out of README.md, exactly as any other definition would be.
+CREATE TABLE IF NOT EXISTS doc_definitions (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  -- Slugged from the title once, at create, and then immutable: the title is
+  -- editable and this is not. It is the value already copied into
+  -- doc_jobs.doc_type, repo_doc_sync.doc_type and repo_documents.doc_type,
+  -- none of which can carry an FK back here (see doc_jobs.doc_type above), so
+  -- a key that changed in place would orphan in-flight jobs and freeze sync
+  -- rows against a key nothing writes any more.
+  doc_key VARCHAR(50) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  -- Two audiences, two fields. description is admin-facing "what is this
+  -- document for" and is NEVER sent to the model; model_prompt is the system
+  -- message, verbatim, with no house template wrapped around it. One field
+  -- serving both would mean either the admin list renders a wall of prompt
+  -- text or the model is handed help text written for someone who already
+  -- knows the system.
+  description TEXT NULL,
+  model_prompt TEXT NOT NULL,
+  -- A models.id, like users.preferred_model_id - NOT the provider string that
+  -- models.model_id holds. NULL means "follow the catalog default". No FK, by
+  -- the same Phase 22 posture app_settings.doc_model_id:<key> had before this
+  -- column replaced it: the pointer may dangle, and it is re-validated on
+  -- every read (modelCatalog.resolveForDocDefinition), falling back loudly
+  -- rather than failing.
+  model_id INT UNSIGNED NULL,
+  -- Replaces app_settings.doc_types_enabled. Inactive freezes regeneration and
+  -- leaves what was already generated readable - it deletes nothing.
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  -- Bumped when model_prompt changes, and only then: title and description
+  -- never reach the model, so neither can change the output. Compared against
+  -- repo_doc_sync.synced_prompt_revision - see that column.
+  prompt_revision INT NOT NULL DEFAULT 1,
+  -- Delete archives. The row stays so its doc_key stays reserved: a later
+  -- definition reusing the key would silently inherit the archived document's
+  -- repo_documents rows and sync history. A genuine purge is a separate,
+  -- confirmed action that does not exist yet.
+  archived_at TIMESTAMP NULL DEFAULT NULL,
+  created_by INT UNSIGNED NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  -- Across archived rows too, which is the point of keeping them.
+  UNIQUE KEY uq_doc_definitions_key (doc_key),
+  CONSTRAINT fk_doc_definitions_user FOREIGN KEY (created_by) REFERENCES users (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ---------------------------------------------------------------------------
@@ -378,9 +448,12 @@ CREATE TABLE IF NOT EXISTS repo_doc_sync (
 CREATE TABLE IF NOT EXISTS usage_events (
   id INT UNSIGNED NOT NULL AUTO_INCREMENT,
   -- VARCHAR, not an ENUM (it was one until Phase 23): the document call sites
-  -- come from the docTypes.js registry, and a new document type has to be able
-  -- to bill itself without a migration. 'overlap_check', 'clarification',
-  -- 'codegen' and 'spec_doc' are the values in use today.
+  -- are derived from doc_definitions rows an admin creates, and a document
+  -- created this morning has to be able to bill itself without a migration.
+  -- 'overlap_check', 'clarification' and 'codegen' are the fixed values;
+  -- documents bill as 'doc:<doc_key>'. 'spec_doc' is retired (Phase 24) -
+  -- rows written before then keep it and stay queryable, but nothing writes
+  -- it any more.
   call_site VARCHAR(50) NOT NULL,
   session_id INT UNSIGNED NULL,
   repo_id INT UNSIGNED NULL,
@@ -527,26 +600,13 @@ CREATE TABLE IF NOT EXISTS models (
 --
 --   maintenance_locked  '1'/'0'  - the admin maintenance lock (app/lib/appLock.js)
 --   maintenance_message TEXT     - the message shown to locked-out users
---   doc_types_enabled   comma-separated docTypes.js registry keys - which
---                                document types the nightly worker generates
---                                (app/lib/documents/docSettings.js). A MISSING
---                                row and an EMPTY one mean different things:
---                                missing is "never configured" and enables the
---                                pre-Phase-23 set, empty is an admin choosing
---                                to generate nothing.
---   doc_model_id:<key>  models.id as a string, or '' for "use the catalog
---                                default" - which model generates that one
---                                document type. One row per registry key
---                                (Phase 23; was a single spec_doc_model_id in
---                                Phase 22). Document generation is the one
---                                model call with no requesting user to inherit
---                                a preference from.
 --
--- Note that setting_value cannot carry a foreign key, so a doc_model_id:<key>
--- can dangle when the model it names is deleted; modelCatalog.resolveForDocType
--- re-validates it on every read and falls back rather than failing. The same
--- goes for doc_types_enabled naming a key no longer in the registry, which
--- docSettings.js ignores on read.
+-- Phase 24 removed the two document keys that used to live here
+-- (doc_types_enabled and doc_model_id:<key>). Both are now columns on
+-- doc_definitions (is_active and model_id): a comma-separated key list in a
+-- settings row plus a table of the same keys is two sources of truth, and that
+-- only became resolvable once the keys themselves lived in a table that could
+-- own the flag. Do not re-add a document setting here.
 CREATE TABLE IF NOT EXISTS app_settings (
   setting_key VARCHAR(100) NOT NULL,
   setting_value TEXT NULL,
@@ -607,8 +667,9 @@ ALTER TABLE model_provider_health DROP PRIMARY KEY, ADD PRIMARY KEY (provider, m
 -- ---------------------------------------------------------------------------
 
 -- ENUM -> VARCHAR on both columns that name a document type or its call site.
--- A new document type is a new file in app/lib/documents/docTypes.js; it must
--- not also be a schema change. MODIFY COLUMN is naturally idempotent (it
+-- A new document type was a new file in app/lib/documents/docTypes.js when
+-- this ran, and is a doc_definitions row now; either way it must not also be a
+-- schema change. MODIFY COLUMN is naturally idempotent (it
 -- restates the target type), and widening an ENUM to a VARCHAR preserves every
 -- existing row's label verbatim.
 ALTER TABLE repo_documents MODIFY COLUMN doc_type VARCHAR(50) NOT NULL;
@@ -644,19 +705,38 @@ INSERT INTO repo_doc_sync (repo_id, doc_type, synced_commit_sha)
   FROM repos WHERE spec_doc_synced_commit_sha IS NOT NULL
   ON DUPLICATE KEY UPDATE synced_commit_sha = repo_doc_sync.synced_commit_sha;
 
--- The Phase 22 single-model setting becomes the spec type's per-type setting.
--- Selected through a derived table because MariaDB will not let an
--- INSERT ... SELECT read the table it is inserting into directly. Same
--- keep-the-existing-row rule as above, so a replay cannot clobber a model an
--- admin has since changed; then the old key is removed so nothing reads it
--- again.
-INSERT INTO app_settings (setting_key, setting_value, updated_by_user_id)
-  SELECT * FROM (
-    SELECT 'doc_model_id:spec_communication_protocol' AS k, setting_value AS v, updated_by_user_id AS u
-    FROM app_settings WHERE setting_key = 'spec_doc_model_id'
-  ) AS legacy
-  ON DUPLICATE KEY UPDATE setting_value = app_settings.setting_value;
+-- Phase 22's single spec_doc_model_id setting was migrated here to the per-type
+-- doc_model_id:<key> form. That INSERT is gone: Phase 24 below deletes every
+-- doc_model_id:% key, so copying one forward only to delete it again on the
+-- same replay was dead work. The DELETE stays - it is the only thing that
+-- retires the Phase 22 key on a database that never ran the Phase 23 copy.
 DELETE FROM app_settings WHERE setting_key = 'spec_doc_model_id';
+
+-- ---------------------------------------------------------------------------
+-- Phase 24: admin-defined documents
+--
+-- Upgrade path for a database created before Phase 24; on a fresh install every
+-- statement here is a no-op, because the definitions above already describe the
+-- end state.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE repo_doc_sync ADD COLUMN IF NOT EXISTS synced_prompt_revision INT NOT NULL DEFAULT 1
+  AFTER synced_commit_sha;
+
+-- The two document settings move out of app_settings and become columns on
+-- doc_definitions. There is deliberately nothing to migrate INTO: no definition
+-- is seeded by this file (not even the spec doc - see doc_definitions above),
+-- so on an upgraded database these keys have no destination row and their
+-- values are dropped. The admin re-picks the model when they create the
+-- definition, which is one choice made once, against a page that now shows the
+-- whole document rather than a checkbox for one the code chose.
+--
+-- Both DELETEs are destructive and both are safe to replay: they name keys
+-- nothing writes any more, so a replay after an admin has edited a definition
+-- finds nothing and resurrects nothing. That is the guard - not a condition on
+-- the DELETE, but the fact that no code path can recreate these keys.
+DELETE FROM app_settings WHERE setting_key = 'doc_types_enabled';
+DELETE FROM app_settings WHERE setting_key LIKE 'doc_model_id:%';
 
 -- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is

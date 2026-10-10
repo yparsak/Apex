@@ -14,17 +14,24 @@
       <p class="placeholder">No requirements have been implemented on this repo yet.</p>
     <% } %>
 
-    <%# One block per registered document type (see ROADMAP.md Phase 23), so a
-        newly registered type shows up here without a view edit. A type an admin
-        has switched off still renders whatever was last generated for it:
-        disabling stops regeneration, it does not delete content. %>
+    <%# One block per document an admin has defined (see ROADMAP.md Phase 24),
+        so a document created this morning shows up here without a view edit. A
+        document an admin has switched off still renders whatever was last
+        generated for it: turning it off stops regeneration, it does not delete
+        content. If this section is empty, no documents are defined at all -
+        Apex ships with none. %>
     <% generatedDocs.forEach(function(d) { %>
       <h2><%= d.label %></h2>
+      <% if (d.description) { %><p class="placeholder"><%= d.description %></p><% } %>
       <% if (d.doc) { %>
-        <p class="placeholder">Last updated <%= d.doc.updated_at %></p>
+        <p class="placeholder">
+          Last updated <%= d.doc.updated_at %><% if (!d.active) { %> — no longer regenerating<% } %>
+        </p>
         <pre class="document-body"><%= d.doc.content %></pre>
+      <% } else if (!d.active) { %>
+        <p class="placeholder">Not generated, and not set to generate.</p>
       <% } else { %>
-        <p class="placeholder">Not generated yet — regenerates automatically once trunk has content to summarize, if this document is enabled.</p>
+        <p class="placeholder">Not generated yet — regenerates automatically on the next nightly run, once trunk has content to summarize.</p>
       <% } %>
     <% }) %>
   </main>

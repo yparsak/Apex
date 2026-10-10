@@ -5,86 +5,154 @@
     <% if (error) { %><p class="error"><%= error %></p><% } %>
 
     <p class="placeholder">
-      The documents Apex generates for every repo, overnight, whenever that repo's trunk
-      has moved. Each one can be turned off independently and given its own model — these
-      jobs run unattended with no user behind them to inherit a model choice from, so it
-      is set here rather than picked per run.
+      The documents Apex writes for every repo, overnight, whenever that repo's trunk has
+      moved or you have edited the prompt. Everything here is defined on this page — Apex
+      ships with none, so a new install writes nothing until you create one below.
     </p>
     <p class="placeholder">
-      Turning a document off stops it being regenerated. It does not delete anything: what
-      has already been written stays readable on each repo's Documents page, frozen at the
-      last version generated.
+      <strong>Description</strong> is for people: it is what this page and each repo's
+      Documents page show about why a document exists, and it is never sent to the model.
+      <strong>Model prompt</strong> is sent to the model verbatim, as the system message,
+      with nothing wrapped around it — what you write is exactly what it receives.
+      Every document is written from the same material (the repo's file tree plus its
+      README, <code>package.json</code> and <code>apex.pipeline.json</code>); you control
+      what the model is told about that material, not which files it reads.
+    </p>
+    <p class="placeholder">
+      Each document is given its own model here — these jobs run unattended with no user
+      behind them to inherit a model choice from. Turning one off stops it being
+      regenerated; it deletes nothing, and what has already been written stays readable on
+      each repo's Documents page, frozen at the last version generated.
     </p>
 
     <%
       var enabledModels = models.filter(function(m) { return m.enabled; });
     %>
-
-    <form method="POST" action="/admin/documents/enabled">
-      <table class="admin-table">
-        <thead><tr><th>Generate</th><th>Document</th><th>Model</th></tr></thead>
-        <tbody>
-          <% types.forEach(function(t) { %>
-          <tr>
-            <td>
-              <input type="checkbox" name="doc_type_key" value="<%= t.key %>"
-                     id="enable-<%= t.key %>" <%= t.enabled ? 'checked' : '' %>>
-            </td>
-            <td>
-              <label for="enable-<%= t.key %>"><strong><%= t.label %></strong></label>
-              <p class="placeholder"><%= t.description %></p>
-            </td>
-            <%# Read-only here; the selects live in their own forms below, since a
-                form nested inside this one would be invalid HTML and the two are
-                separately auditable decisions anyway. %>
-            <td>
-              <% if (!t.effectiveModel) { %>
-                <span class="error">No model available</span>
-              <% } else { %>
-                <%= t.effectiveModel.display_name %>
-              <% } %>
-              <% if (t.usedFallback) { %>
-                <p class="error">
-                  The model configured for this document is no longer available (disabled or
-                  deleted), so the catalog default is being used instead. Pick a model below
-                  to make the choice explicit again.
-                </p>
-              <% } %>
-            </td>
-          </tr>
-          <% }) %>
-        </tbody>
-      </table>
-      <button type="submit">Save which documents are generated</button>
-    </form>
-
-    <% if (orphanedKeys.length) { %>
+    <% if (!enabledModels.length) { %>
       <p class="error">
-        Enabled but no longer available in this build of Apex:
-        <%= orphanedKeys.join(', ') %>. Nothing is generated for these. Save the form above
-        to drop them from the list.
+        No model is enabled, so nothing can be generated no matter what is defined here.
+        Add and enable one on the Models page.
       </p>
     <% } %>
 
-    <h2>Model per document</h2>
-    <% if (!enabledModels.length) { %>
-      <p class="placeholder">Add and enable a model on the Models page first.</p>
-    <% } else { %>
-      <% types.forEach(function(t) { %>
-        <form method="POST" action="/admin/documents/<%= t.key %>/model" class="stacked-form">
-          <label><%= t.label %>
-            <select name="model_id">
-              <option value="" <%= t.configuredModelId ? '' : 'selected' %>>
-                Use the catalog default<%= t.effectiveModel && !t.configuredModelId ? ' (' + t.effectiveModel.display_name + ')' : '' %>
-              </option>
-              <% enabledModels.forEach(function(m) { %>
-                <option value="<%= m.id %>" <%= t.configuredModelId === m.id ? 'selected' : '' %>><%= m.display_name %></option>
-              <% }) %>
-            </select>
-          </label>
-          <button type="submit">Save</button>
-        </form>
-      <% }) %>
+    <% if (!definitions.length) { %>
+      <p class="placeholder">
+        No documents are defined, so the nightly run writes nothing. To recreate the
+        Spec / Communication Protocol document Apex used to ship with, see "Recreating the
+        Spec / Communication Protocol document" in the README — the form below already
+        opens with that document's prompt in it.
+      </p>
     <% } %>
+
+    <% definitions.forEach(function(d) { %>
+      <h2><%= d.title %></h2>
+      <p class="placeholder">
+        Key <code><%= d.doc_key %></code> (fixed at creation — the title can change, this
+        cannot).
+        <% if (d.is_active) { %>Active.<% } else { %>Not active — not regenerating.<% } %>
+        Generated for <%= d.documentCount %> repo<%= d.documentCount === 1 ? '' : 's' %>.
+      </p>
+
+      <% if (!d.effectiveModel) { %>
+        <p class="error">No model available — this document cannot be generated.</p>
+      <% } else if (d.usedFallback) { %>
+        <p class="error">
+          The model configured for this document is no longer available (disabled or
+          deleted), so the catalog default (<%= d.effectiveModel.display_name %>) is being
+          used instead. Pick a model below to make the choice explicit again.
+        </p>
+      <% } %>
+      <% if (d.missingMarkdownHint) { %>
+        <p class="placeholder">
+          This prompt never mentions Markdown. Generated documents are rendered as
+          Markdown, so a prompt that doesn't ask for it may produce something that reads
+          like a chat reply. Advisory only — saved as written.
+        </p>
+      <% } %>
+
+      <form method="POST" action="/admin/documents/<%= d.id %>/update" class="stacked-form">
+        <label>Title
+          <input type="text" name="title" value="<%= d.title %>" maxlength="<%= maxTitleLength %>" required>
+        </label>
+        <label>Description (shown to people, never sent to the model)
+          <textarea name="description" rows="2"><%= d.description || '' %></textarea>
+        </label>
+        <%# Editing this bumps prompt_revision, which is what makes every repo's
+            copy regenerate on the next nightly run. Editing the title or the
+            description does not - neither reaches the model. %>
+        <label>Model prompt (sent to the model verbatim)
+          <textarea name="model_prompt" rows="12" required><%= d.model_prompt %></textarea>
+        </label>
+        <label>Model
+          <select name="model_id">
+            <option value="" <%= d.model_id ? '' : 'selected' %>>
+              Use the catalog default<%= d.effectiveModel && !d.model_id ? ' (' + d.effectiveModel.display_name + ')' : '' %>
+            </option>
+            <% enabledModels.forEach(function(m) { %>
+              <option value="<%= m.id %>" <%= d.model_id === m.id ? 'selected' : '' %>><%= m.display_name %></option>
+            <% }) %>
+          </select>
+        </label>
+        <button type="submit">Save</button>
+        <p class="placeholder">
+          Saving a changed prompt regenerates this document for every repo on the next
+          nightly run — not immediately.
+        </p>
+      </form>
+
+      <form method="POST" action="/admin/documents/<%= d.id %>/active" class="row-form">
+        <input type="hidden" name="active" value="<%= d.is_active ? 'false' : 'true' %>">
+        <button type="submit"><%= d.is_active ? 'Turn off' : 'Turn on' %></button>
+      </form>
+      <%# Archives rather than purges, so the confirm says what actually
+          happens: the already-generated copies survive, they just stop being
+          listed anywhere. The title is deliberately not interpolated into the
+          confirm text - it is admin-supplied and would be going into a JS
+          string literal inside an HTML attribute, which is two layers of
+          escaping to get right for no gain. %>
+      <form method="POST" action="/admin/documents/<%= d.id %>/delete" class="row-form"
+            onsubmit="return confirm('Delete this document? It stops being generated and disappears from every repo Documents page. The <%= d.documentCount %> already written are not deleted, but nothing will list them. This cannot be undone from here.');">
+        <button type="submit" class="danger-button">Delete</button>
+      </form>
+    <% }) %>
+
+    <h2>New document</h2>
+    <%# Prefilled, not blank. The starter is the prompt that used to be the
+        hardcoded spec doc, and it exists to teach the output contract: there is
+        no way to validate that a prompt will produce Markdown, so the defense
+        is that the admin starts from something that already does. %>
+    <p class="placeholder">
+      The prompt below is a working example — the one Apex used to ship with. Edit it
+      rather than starting from nothing, and keep a line like its last one: it is what
+      makes the model return a document instead of a reply.
+    </p>
+    <form method="POST" action="/admin/documents" class="stacked-form">
+      <label>Title
+        <input type="text" name="title" value="<%= form ? form.title : '' %>"
+               maxlength="<%= maxTitleLength %>" placeholder="e.g. Code Review Notes" required>
+      </label>
+      <label>Description (shown to people, never sent to the model)
+        <textarea name="description" rows="2" placeholder="What is this document for?"><%= form ? form.description : '' %></textarea>
+      </label>
+      <label>Model prompt (sent to the model verbatim, at least <%= minPromptLength %> characters)
+        <textarea name="model_prompt" rows="12" required><%= form ? form.model_prompt : starterPrompt %></textarea>
+      </label>
+      <label>Model
+        <select name="model_id">
+          <option value="">Use the catalog default</option>
+          <% enabledModels.forEach(function(m) { %>
+            <option value="<%= m.id %>" <%= form && String(form.model_id) === String(m.id) ? 'selected' : '' %>><%= m.display_name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <%# Checked by default: someone who just wrote a prompt wants it to run.
+          An unchecked box posts nothing at all, which the route reads as
+          "created but not active". %>
+      <label>
+        <input type="checkbox" name="is_active" value="1" checked>
+        Generate this document from the next nightly run
+      </label>
+      <button type="submit">Create document</button>
+    </form>
   </main>
 <%- include('../partials/foot') %>

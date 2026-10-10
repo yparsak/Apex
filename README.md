@@ -14,6 +14,11 @@ promotion to a test branch, and the merge to `main` remain exactly the human-dri
 process they were before Apex existed — Apex's job is to get an engineer to a working
 DEV branch faster, not to make the final call.
 
+Separately from all of that, Apex also runs **unattended, on a nightly cron job**, and
+writes repo-aware documents — whatever an admin has defined, for every repo it knows
+about. Nobody asks for these and nobody waits on them; see
+[Generated documents](#generated-documents) below.
+
 ## How it works, in short
 
 1. **Pick a repo and branch.** Start fresh off the repo's default branch, or continue
@@ -38,6 +43,47 @@ DEV branch faster, not to make the final call.
 5. **Push to DEV.** Only a passing build/test result ever gets pushed, and only to a
    `dev/**` branch — a GitHub App scoped to exactly that, with no merge authority at
    all.
+
+## Generated documents
+
+Everything above is driven by an engineer at a keyboard. Apex's other half runs with
+nobody there: a **one-shot script invoked nightly by cron** (`make doc-worker`,
+[docWorker.js](docWorker.js)) walks every repo Apex knows about, notices which ones have
+moved since it last looked, and asks the model to write a document about each one. The
+result lands on that repo's **Documents** page in the web app.
+
+These are **repo-aware** — written from the repo's actual file tree and its key files
+(`README.md`, `package.json`, `apex.pipeline.json`) read live from its default branch,
+not from a template and not from anything a user typed. They are also whole-repo and
+not tied to any Change Order: a document describes the repo as it stands, and is
+regenerated from scratch rather than patched.
+
+**What gets written is configured by an admin, not by an engineer and not by us.** On
+`/admin/documents`, an admin creates a document definition out of four fields:
+
+| Field | What it is |
+|---|---|
+| **Title** | What the document is called, on the admin page and on every repo's Documents page. |
+| **Description** | Why the document exists, for whoever reads it. Never sent to the model. |
+| **Model Prompt** | Sent to the model **verbatim**, as the system message. No template is wrapped around it — what an admin writes is exactly what the model receives. |
+| **Model** | Which model writes it. These jobs run with no user behind them to inherit a model choice from, so a cheap document and an expensive one can use different models. |
+
+Plus an **Active** flag: turning a document off stops it being regenerated without
+deleting what has already been written.
+
+Two things worth knowing up front:
+
+- **Apex ships with no documents defined.** A fresh install generates nothing until an
+  admin creates something — the nightly run logs `No Active Document to generate` and
+  exits cleanly, which is a normal run, not a failure. To get back the
+  Spec / Communication Protocol document Apex used to ship with, see
+  [Recreating the Spec / Communication Protocol document](#recreating-the-spec--communication-protocol-document).
+- **An admin controls what the model is *told*, not what it *reads*.** Every document,
+  whatever its prompt, is written from the same material listed above. A prompt can ask
+  for anything; the model still only ever sees those files.
+
+Adding a new kind of document is a form submission. It is not a deploy, not a schema
+change, and not a ticket.
 
 ## Documentation
 
@@ -103,10 +149,74 @@ make clean      # full reset - also removes the data volume and network
     edit, verify its anchor against the file, splice or refuse.
 - `worker.js` — AI pipeline poller (see [SPEC.md](SPEC.md)).
 - `docWorker.js` — generated-document regeneration and repo-file-map retirement, run
-  nightly via cron. Which documents it writes comes from
-  `app/lib/documents/docTypes.js`, the document-type registry, filtered by what an admin
-  has enabled on `/admin/documents` (`app/routes/admin/documents.js`,
-  `views/admin/documents.ejs`). Adding a document type is a new file plus a line in that
-  registry.
+  nightly via cron. Which documents it writes comes entirely from the `doc_definitions`
+  table (`app/lib/documents/docDefinitions.js`), which an admin fills in on
+  `/admin/documents` (`app/routes/admin/documents.js`, `views/admin/documents.ejs`).
+  **Apex ships with no document definitions**, so a fresh install generates nothing
+  until someone creates one — see "Recreating the Spec / Communication Protocol
+  document" below. Adding a document type is a form submission, not a deploy.
+  `app/lib/documents/docContext.js` is the shared builder for what the model reads,
+  which is the same material for every document.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.
+
+## Recreating the Spec / Communication Protocol document
+
+Until Phase 24 Apex shipped with exactly one built-in document type, written into the
+code. It is now a row like any other, and it is not seeded — a fresh install generates
+nothing. To get it back, go to `/admin/documents`, open the **New document** form, and
+use the three values below. The form already opens with the Model Prompt pre-filled with
+this exact text, so in practice this is: paste the title, paste the description, pick a
+model, submit.
+
+What this produces is not merely similar to the pre-Phase-24 document — the prompt is
+sent to the model verbatim and the material it reads is unchanged, so the model receives
+byte-for-byte the same two messages it received before.
+
+**Title**
+
+```
+Spec / Communication Protocol
+```
+
+**Description** (shown to people on `/admin/documents` and on each repo's Documents
+page; never sent to the model)
+
+```
+What the repo does, how it is structured, how to build and run it, and the surface
+other teams integrate against. Written for engineers outside the repo.
+```
+
+**Model Prompt** (sent to the model verbatim, as the system message)
+
+```
+You are Apex's documentation agent. Write a concise Spec / Communication Protocol
+document for this repo, for engineers on other teams who integrate with it but do not
+work in its codebase day to day. Cover what the repo does, its overall structure, how
+to build/test/run it, and its integration surface (APIs it exposes, services it
+depends on, message formats) - whatever is actually evident from the material below.
+Do not invent details that are not supported by it.
+
+Respond with the complete document in Markdown, and nothing else.
+```
+
+Keep that last line, or something like it, in any document you write. Generated content
+is rendered as Markdown, and it is the only thing making the model return a document
+rather than a reply. Nothing validates it — a prompt without it saves fine and the
+problem only shows up the next morning, on a repo's Documents page.
+
+### Writing your own
+
+The same form writes any other document. Beyond the scope boundary already noted above
+(the model reads the same three files no matter what the prompt asks for — the first
+limit you will hit writing anything that isn't an overview, see
+[undecided_topics.md](undecided_topics.md)), two things are worth knowing before you
+create one:
+
+- **Editing the prompt regenerates the document for every repo** on the next nightly
+  run — not immediately, and not when you edit only the title or the description
+  (neither of those reaches the model, so neither can change the output).
+- **The key is fixed at creation.** It is slugged from the title once; renaming the
+  document afterwards does not move it. Deleting a document archives it: it stops being
+  generated and disappears from every page, but the copies already written are not
+  deleted and the key stays reserved, so a later document cannot inherit them.

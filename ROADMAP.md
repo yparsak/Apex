@@ -2017,6 +2017,263 @@ appeared on `/admin/documents` (unchecked — new types are opt-in), generated t
 same scan/drain, rendered on the repo's Documents page, and billed under its own
 `call_site` on `/admin/usage`. The probe was then removed.
 
+## Phase 24 — Admin-defined documents
+
+Today a document type only exists if an engineer writes it. Phase 23 made the pipeline
+registry-driven and proved a second type costs *a new file plus a registry line* — but
+that line is still a deploy. An admin who wants a "Code Review" or "Onboarding Notes"
+document has to file a ticket and wait for a release. This phase moves authorship to the
+admin: `/admin/documents` gains **create**, where a document definition is four fields —
+**Title**, **Description** (for humans), **Model Prompt** (sent to the model), and
+**Model** — plus an **Active** flag. Definitions generate on the same nightly scan/drain
+every built-in type used.
+
+The deliberate consequence is that `app/lib/documents/docTypes.js` and its one hardcoded
+Spec/Communication Protocol entry are **deleted**. There are no built-in types after this
+phase — a fresh install generates nothing until an admin defines something. The Spec doc
+is not seeded, not grandfathered, and not special-cased; it is reproduced by pasting the
+title, description and prompt out of [README.md](README.md), exactly as any other
+admin-defined document would be. Keeping it as a built-in would leave two code paths (one
+where the prompt is a module constant, one where it is a column) and the module path
+would be the one nobody tests.
+
+The scope boundary: an admin controls **what the model is told**, not **what the model
+reads**. There is no per-definition file list — every definition gets the same repo
+context the spec doc gets today. The phase is done when a new document type is *a form
+submission*, and when the Spec doc reproduced from the README is byte-comparable to what
+Phase 23 generated — same prompt text, same context, same output. If it isn't, something
+in the generic path is still spec-shaped.
+
+### Data model
+
+All idempotent — `db/schema.sql` is replayed whole by `make migrate`, there are no
+incremental migration files. The two `app_settings` deletions below are the only
+destructive steps and must be guarded so a replay after an admin has edited a definition
+does not resurrect them.
+
+| Object | Change |
+|---|---|
+| `doc_definitions` (new) | `id`, `doc_key VARCHAR(50) NOT NULL UNIQUE`, `title VARCHAR(200)`, `description TEXT`, `model_prompt TEXT`, `model_id`, `is_active TINYINT(1)`, `prompt_revision INT NOT NULL DEFAULT 1`, `archived_at`, `created_by`, timestamps. This is the registry, now a table. `description` keeps its Phase 23 meaning exactly — admin-facing "what is this document for", never sent to the model; `model_prompt` is the system message, verbatim. Two fields because they are two audiences, and one field serving both means either the admin list reads like a prompt or the model receives help text. |
+| `doc_definitions.doc_key` | Slugged from the title once, at create, then **immutable** — the title is editable and the key is not. It is the value already stored in `doc_jobs.doc_type`, `repo_doc_sync.doc_type` and `repo_documents.doc_type`, none of which can carry an FK to it, so a key that changes orphans in-flight jobs and freezes sync rows. Same hazard Phase 23 flagged for registry keys and `models.model_id`. |
+| `doc_definitions.prompt_revision` | Bumped whenever `model_prompt` changes, and only then. Staleness today is "trunk moved"; a prompt edit moves nothing in git and would otherwise never regenerate. Title and description changes deliberately do *not* bump it — neither reaches the model, so neither can change the output. Compared alongside the sha — see Design. |
+| `repo_doc_sync` | New `synced_prompt_revision INT NOT NULL DEFAULT 1` beside `synced_commit_sha`, for the above. |
+| `app_settings.doc_types_enabled` | **Deleted.** Enablement becomes `doc_definitions.is_active`. A comma-separated key list in a settings row and a table of the same keys are two sources of truth, which is the exact failure Phase 23's registry note was defending against — it is only resolved here because the keys now live in a table that can own the flag. |
+| `app_settings.doc_model_id:<key>` | **Deleted**, migrated into `doc_definitions.model_id`. Still no FK (the Phase 22 re-validate-on-read posture stands: a model since disabled or deleted falls back to the catalog default, loudly). |
+| `usage_events.call_site` | No schema change — already `VARCHAR(50)` since Phase 23. Admin-defined types bill as `doc:<doc_key>`. Note that deleting the spec registry entry retires the literal `spec_doc` call site: pre-Phase-24 spend stays queryable on `/admin/usage` but will not accumulate, and a reproduced Spec doc bills under a new value. That split is accepted here, having been explicitly avoided in Phase 23. |
+
+### Design
+
+- **`model_prompt` is sent verbatim as the system message.** No house template wraps it,
+  no title or description is interpolated into it. The alternative considered was Apex
+  owning a template with `{title}`/`{instructions}` holes, so the admin supplied only
+  intent and Apex supplied the role framing and the Markdown-only output contract. It was
+  rejected for being a lie about where control lives: the field would be called a prompt
+  and not be one, an admin debugging a bad document could not see the text actually sent,
+  and every prompt technique the template did not anticipate would be unreachable. The
+  real cost of verbatim is accepted — a house-wide improvement to the framing becomes an
+  un-migratable edit across N rows, with no way to push it to definitions an admin has
+  since customized. That is the price of the field meaning what it says.
+- **The create form opens pre-filled with a working prompt, not blank.** The starter text
+  is the deleted `SPEC_SYSTEM_PROMPT` verbatim, including its closing `Respond with the
+  complete document in Markdown, and nothing else.` This is the actual guardrail against
+  a prompt that breaks rendering: an admin edits a working example rather than inventing
+  the output contract from nothing, and the one line `repo_documents` rendering depends on
+  is already present before they start typing. A prefilled example teaches the contract
+  far better than validation can enforce it — there is no reliable check for "this prompt
+  will produce Markdown", so the defense has to be at authoring time.
+- **Description and prompt are separate fields, serving separate audiences.** Description
+  is what `/admin/documents` and the repo Documents page show a human about why a document
+  exists; the prompt is what the model receives. Collapsing them was considered and
+  rejected: a single field means either the admin list renders a wall of prompt text, or
+  the model is handed help text written for a reader who already knows the system.
+- **Context stays exactly what the spec doc got.** One shared builder — the file tree plus
+  `README.md`, `package.json`, `apex.pipeline.json` — now a module-level function rather
+  than a per-entry `buildContext`. Per-definition file selection is explicitly deferred:
+  it needs path validation, glob semantics, and an answer for a definition naming files no
+  repo has, and none of that is needed to prove admins can author documents. The honest
+  cost is that two definitions differing only in prompt read the same three files, so
+  a "Security Analysis" document will be as thin as Phase 20 already notes the spec doc is.
+  It is also the limit the verbatim prompt field will run into first: an admin can ask for
+  anything, but the model only ever sees a tree and three files.
+- **A prompt edit regenerates.** It bumps `prompt_revision`, and the scan treats
+  `(synced_commit_sha, synced_prompt_revision) != (trunk_sha, definition.prompt_revision)`
+  as stale. Without this an admin fixes a prompt, sees nothing change for weeks, and
+  concludes the feature is broken. Regeneration is deliberately *not* immediate — it rides
+  the next nightly run like everything else; an on-demand "regenerate now" button is a
+  separate concern.
+- **Deactivating freezes; deleting archives.** `is_active = 0` stops regeneration and
+  leaves generated content readable, inheriting Phase 23's rule verbatim. Deletion sets
+  `archived_at` and hides the definition from the admin list, but **does not** remove
+  `repo_documents` rows or the definition row itself — the key must stay reserved so a
+  later definition cannot reuse it and silently inherit another document's history. A
+  genuine purge is a separate, confirmed action, if it is ever wanted.
+- **`docWorker.js` exits cleanly on an empty registry.** With no built-in types, "nothing
+  defined" is now the state of every fresh install rather than a misconfiguration. The
+  worker logs `No Active Document to generate` and exits 0 — not a warning, not a
+  non-zero status that a cron wrapper would page someone about. The map prune and log
+  retention still run, for the reason they already sit outside the lock branch.
+- **The Spec doc lives in the README, not in the code.** README gains a short
+  "Recreating the Spec / Communication Protocol document" section giving the title, a
+  one-line description, and the **full text of the deleted `SPEC_SYSTEM_PROMPT`** as the
+  Model Prompt. Because the prompt is sent verbatim and the context builder is unchanged,
+  a definition created from that section is not merely equivalent to the Phase 23 spec
+  doc — it is the same two messages. That is what makes the phase's acceptance test sharp
+  rather than a judgment call about whether the output "looks similar".
+- **Validation is thin but real.** Title required and unique among non-archived
+  definitions; prompt required with a sane minimum length (a one-line prompt produces a
+  worthless document and the failure is invisible until the next morning); `doc_key`
+  collision resolved by suffix at create. Rejected: any attempt to validate that a prompt
+  is *good*, or that it will produce Markdown. A soft warning if the prompt never
+  mentions Markdown is the most that is defensible, and even that is advisory.
+- **Create, edit, activate and delete are audited**, via `adminAudit.logAdminAction` like
+  every other admin mutation — and more sharply than Phase 23's toggles, because the audit
+  row is now the only record of what a definition's prompt said before someone changed it.
+  With no document versioning (see below), it is also the only way to correlate a
+  generated document with the prompt that produced it.
+
+Open / undecided for this phase:
+
+- **How a house-wide prompt improvement ever reaches existing definitions.** This is the
+  accepted cost of the verbatim field, and it has no answer yet. If a better framing is
+  found, every definition is a hand edit, and there is no way to distinguish a row still
+  carrying the prefilled starter text (safe to update in bulk) from one an admin
+  deliberately customized. Stamping the starter's version on create would at least make
+  that distinguishable later.
+- **Whether per-definition file selection is the next phase or never.** The thin-context
+  limitation is the most likely first complaint about admin-defined documents, and the
+  answer shapes whether `doc_definitions` grows a child table.
+- **Whether definitions should be per-repo or per-repo-group.** Phase 23 left this open
+  for enablement and Phase 24 inherits it unchanged: a Security Analysis document wanted
+  for three repos still runs against thirty.
+- **No versioning or history**, inherited from Phase 8 and unresolved by Phase 23. It is
+  worse now: with an editable prompt, "which prompt wrote the version I read last week"
+  is answerable only by reading the admin audit log and comparing timestamps by hand.
+- **Whether the retired `spec_doc` call site should be remapped** rather than left as a
+  historical value on `/admin/usage` that no new row will ever carry.
+
+- **Docs to update on implementation:**
+  - **[README.md](README.md)** — new "Recreating the Spec / Communication Protocol
+    document" section (title, description and the full prompt text to paste); the
+    project-structure list loses `docTypes.js` and gains the definition service; any
+    first-run description that implies documents generate out of the box — they no longer
+    do, and that is the single most surprising change in this phase.
+  - **[SPEC.md](SPEC.md)** — the `apex-doc-worker` row (documents are admin-*defined*, not
+    admin-*selected*, and a fresh install generates none); the data-model section gains
+    `doc_definitions` and the `repo_doc_sync` revision column, and loses the two
+    `app_settings` keys.
+  - **[apex_nim_integration.md](apex_nim_integration.md)** — the call-site section again:
+    the doc call site's system prompt is no longer a code constant at all, so the prompt
+    text quoted there must be replaced by a pointer to `doc_definitions.model_prompt` —
+    the document says "the single source of truth for everything model-facing", and after
+    this phase part of that truth lives in the database and varies per deployment, which
+    the document has to say out loud rather than quietly going stale. The model-stamping
+    table's per-type row now reads from `doc_definitions.model_id`.
+  - **[apex_troubleshooting.md](apex_troubleshooting.md)** — "document not updating" gains
+    a new first check ("is a document defined at all, and is it active?") ahead of Phase
+    23's enablement check, plus the `No Active Document to generate` log line as a
+    diagnosable symptom; and a new entry for "I edited the prompt and nothing changed"
+    (answer: next nightly run).
+  - **[docs/docker-usage.md](docs/docker-usage.md)** — the `apex-doc-worker` description,
+    same generalization, and that a no-op exit is normal and not a failed run.
+  - **[undecided_topics.md](undecided_topics.md)** — whichever of the open questions above
+    ship unresolved.
+
+### Implementation notes
+
+Built as planned. Three details worth recording, none of which was in the plan:
+
+- **`key` and `docType` collapsed back into one field.** Phase 23 kept them separate
+  because `repo_documents` also holds `requirements_log` rows the registry does not
+  generate, so the two namespaces were not guaranteed to stay in step. With definitions
+  in a table there is nowhere to put a second key that an admin would never see or set,
+  so `doc_key` is now the value written to all three `doc_type` columns — and
+  `requirements_log` is protected instead by a reserved-key list in
+  `docDefinitions.allocateKey`, which is the narrower, more honest guard: the hazard was
+  always one specific collision, not a general namespace split.
+- **The `doc_model_id:<key>` settings are deleted, not migrated.** The plan said
+  "migrated into `doc_definitions.model_id`", but since no definition is seeded there is
+  no destination row to migrate into — the two statements cannot both be true. The
+  values are dropped and the admin re-picks a model when creating the definition. The
+  schema comment says this out loud rather than implying a copy that does not happen.
+- **`docWorker.js` still drains with no active definitions.** The plan said it logs and
+  exits; it logs, skips the *scan*, and still runs the drain. A job queued last night
+  for a document deactivated this morning would otherwise sit `queued` forever and run
+  against a months-old sha whenever the document came back — the exact failure the
+  `skipped` status exists to prevent. The drain is one query when the queue is empty.
+
+Deviation from the plan: the per-document model select is part of the edit form rather
+than its own form and its own route. Phase 23 had it separate because enablement was a
+single whole-page checkbox submit that a nested form would have broken; here the model
+is just one of a definition's four fields, and splitting it would mean two saves for
+one edit.
+
+### Files
+
+Added: `app/lib/documents/docDefinitions.js` (the registry, now a service over a table),
+`app/lib/documents/docContext.js` (the one shared context builder).
+
+Deleted: `app/lib/documents/docTypes.js`, `app/lib/documents/docSettings.js`.
+
+Changed, beyond the obvious: `db/schema.sql` (`doc_definitions`,
+`repo_doc_sync.synced_prompt_revision`, both `app_settings` document keys deleted, the
+now-pointless Phase 23 `doc_model_id` copy removed), `modelCatalog`
+(`resolveForDocType`/`getDocModelSetting`/`setDocModel` → `resolveForDocDefinition`; no
+longer reads `app_settings` at all), `docService` (generic over a definition row; prompt
+verbatim; `doc:<doc_key>` call site; writes the prompt revision), `docScanService`
+(revision is half the staleness test), `docWorker` (the empty-registry branch),
+`app/routes/admin/documents.js` + `views/admin/documents.ejs` (rewritten as CRUD),
+`app/routes/repos.js` + `views/repo-documents.ejs` (definition rows instead of registry
+entries, with an inactive document's content annotated rather than silently frozen).
+
+### Verification
+
+Driven against the running stack and a real MariaDB, not only unit-level.
+
+Migration, in a throwaway database seeded with pre-Phase-24 data (two repos, a
+`doc_types_enabled` setting, a `doc_model_id:<key>` setting, `repo_doc_sync` rows, a
+`spec_communication_protocol` document, a `requirements_log` document, a completed
+`doc_jobs` row): both settings deleted, `synced_prompt_revision` added defaulting to 1
+on existing rows (so nothing regenerates merely because the column appeared),
+`doc_definitions` created empty — nothing seeded, including the spec doc. Replayed twice
+more after inserting a definition at `prompt_revision = 3` and moving a sync row: no
+clobber, no error, no resurrection of the deleted settings. A fresh install produced DDL
+byte-identical to the upgraded database (modulo `AUTO_INCREMENT` counters).
+
+**The phase's acceptance test was run explicitly and literally.** The Spec /
+Communication Protocol document was recreated from the README section — title,
+description and prompt pasted into the create form over real HTTP — and the stored
+`model_prompt` compared byte-for-byte against the deleted `SPEC_SYSTEM_PROMPT` (537
+characters, identical). The scan and drain were then run with `githubApi.getBranch` and
+`modelAdapter.generate` stubbed, capturing the exact message array sent; the Phase 23
+`docTypes.js` entry was loaded from git and its `(system, user)` pair rebuilt under the
+same `repoContext` stubs. The two pairs are identical, both messages, as JSON. Nothing
+in the generic path is still spec-shaped. The title also slugged to
+`spec_communication_protocol` on its own — the Phase 23 key, unprompted.
+
+Behavior, over real HTTP against a real app process. Create, edit, activate, deactivate
+and delete all round-trip and all write audit rows. Validation rejects a blank title, a
+duplicate title, a sub-40-character prompt, and a disabled model, and a rejected submit
+echoes the typed prompt back into the form rather than discarding it. A title-only edit
+leaves `prompt_revision` at 1; a prompt edit bumps it and writes both prompt texts into
+the audit row; `doc_key` does not move either time. The scan enqueued per
+`(repo, definition)`, a second scan with the same sha and the same prompt enqueued
+nothing, and a scan after a prompt edit with an *unchanged* sha enqueued both repos —
+revision staleness works on its own. The drain generated, upserted, wrote
+`repo_doc_sync` with the revision, left `requirements_log` untouched, and billed
+`usage_events` under `doc:spec_communication_protocol`. Deactivating sent queued jobs to
+`skipped`, and the repo's Documents page kept rendering the generated content annotated
+"no longer regenerating". Deleting archived the row, left the content in
+`repo_documents`, removed the document from both the admin list and the repo page, and
+recorded the orphan count; recreating the same title produced a *new* key
+(`spec_communication_protocol_2`), confirming the reservation. With the configured model
+disabled the admin page named the fallback and the definition it applied to; with no
+enabled model at all it said so without crashing. `/admin/usage` renders the new call
+site. `docWorker.js` against a database with no active definition logged
+`No Active Document to generate` at info and exited 0.
+
+Not verified: no real NIM request was issued (`.env` is absent from this working copy),
+the same gap Phases 22 and 23 recorded.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

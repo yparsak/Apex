@@ -15,7 +15,11 @@ long-lived containers on a shared `apex-net` network:
 - `apex-doc-worker` — `docWorker.js`, the generated-document regeneration script
   (`make doc-worker`), run once nightly by cron rather than staying up as a
   persistent container (see ROADMAP.md Phase 15). It regenerates whichever
-  document types an admin has enabled on `/admin/documents` (Phase 23).
+  documents an admin has defined and activated on `/admin/documents` (Phase 24).
+  Apex ships with none, so **a run that generates nothing is a normal run**: it logs
+  `No Active Document to generate` and exits 0. Don't wire a cron wrapper to treat a
+  no-op invocation as a failure — on a fresh install that is every invocation until
+  someone creates a document.
 
 All of these bind-mount the repo into the container and run off the stock
 `node:22-slim` image — there's no custom Dockerfile for the app itself. Most targets

@@ -10,7 +10,7 @@ const auditLog = require('../lib/auditLog');
 const pipelineRunner = require('../lib/pipeline/pipelineRunner');
 const pipelineStepper = require('../lib/pipelineStepper');
 const documentsService = require('../lib/documents/documentsService');
-const docTypes = require('../lib/documents/docTypes');
+const docDefinitions = require('../lib/documents/docDefinitions');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -102,21 +102,34 @@ router.get('/:repoId/documents', async (req, res) => {
   if (!access) return;
 
   // One read for every repo-level document, then split by type, rather than a
-  // query per type: the registry decides how many there are (see ROADMAP.md
-  // Phase 23), and a per-type query would mean one more round trip each time a
-  // type is added.
-  const [branches, docResult] = await Promise.all([
+  // query per type: the definitions decide how many there are (see ROADMAP.md
+  // Phase 23/24), and a per-type query would mean one more round trip each
+  // time an admin creates a document.
+  const [branches, docResult, definitions] = await Promise.all([
     branchService.listActiveBranches(access.repo, access.org),
     db.query("SELECT doc_type, content, updated_at FROM repo_documents WHERE repo_id = ? AND co_number = ''", [
       access.repo.id,
     ]),
+    docDefinitions.listAll(),
   ]);
   const byType = Object.fromEntries(docResult[0].map((d) => [d.doc_type, d]));
 
-  // Built from the registry, not from the rows that happen to exist, so a type
-  // that has never been generated still gets its "not generated yet" block -
-  // and so a newly registered type appears here with no view edit.
-  const generatedDocs = docTypes.list().map((t) => ({ label: t.label, doc: byType[t.docType] || null }));
+  // Built from the definitions, not from the rows that happen to exist, so a
+  // document that has never been generated still gets its "not generated yet"
+  // block - and so a document an admin created this morning appears here with
+  // no view edit.
+  //
+  // listAll(), not listActive(): an inactive document stops regenerating but
+  // what was already written stays readable, which is the whole difference
+  // between turning one off and deleting it. A deleted (archived) definition
+  // does drop off this page - its content survives in repo_documents but
+  // nothing lists it, which is what the admin delete confirmation says.
+  const generatedDocs = definitions.map((d) => ({
+    label: d.title,
+    description: d.description,
+    active: !!d.is_active,
+    doc: byType[d.doc_key] || null,
+  }));
 
   res.render('repo-documents', {
     user: req.session.user,
