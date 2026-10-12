@@ -10,6 +10,15 @@
 // model resolution, the generate call, the usage_events write, the
 // repo_documents upsert, the sync write, and the one-try/catch-per-job drain
 // loop.
+//
+// Phase 25 splits that list in two. Model resolution aside, the first half -
+// build the context, call the model, bill the call - is shared with the
+// on-demand branch runs in docRunService.js, and the second half (the
+// repo_documents upsert and the repo_doc_sync write) is precisely what
+// "stored" means and is what an on-demand run does not do. generate() is the
+// shared half; generateForJob is the nightly caller that persists. A second
+// copy of the generate call would be how the two paths drift until a prompt
+// change only takes effect at night.
 const db = require('../db');
 const modelAdapter = require('../model/modelAdapter');
 const usageService = require('../model/usageService');
@@ -17,6 +26,60 @@ const modelCatalog = require('../model/modelCatalog');
 const docDefinitions = require('./docDefinitions');
 const docContext = require('./docContext');
 const { processLogger } = require('../logger');
+
+// generate({...}) -> the document text. Stores nothing: the two writes that
+// make a document the repo's document of record live in generateForJob below,
+// so a caller that wants a one-off report calls this and nothing happens to
+// the nightly scan's view of the world.
+//
+// `model` is passed in rather than resolved here because the two callers
+// genuinely resolve differently, and for reasons specific to each: the nightly
+// job runs on the model stamped when it was ENQUEUED (scan and drain are
+// separate runs that can straddle a catalog change), while an on-demand run has
+// no such gap and resolves the current one. `callSite` likewise - the whole
+// point of 'doc_run:' is that the two kinds of spend separate on /admin/usage.
+async function generate({ org, repo, definition, model, callSite, ref, compareBase = null }) {
+  const context = await docContext.build(org, repo, ref, { compareBase });
+  const result = await modelAdapter.generate(
+    [
+      // Verbatim. No house template wraps it, and neither the title nor the
+      // description is interpolated into it (see ROADMAP.md Phase 24): the
+      // field is called a prompt and an admin debugging a bad document has to
+      // be able to see the exact text that was sent.
+      //
+      // Unchanged by Phase 25: an on-demand branch run sends the admin's prompt
+      // exactly as the nightly run does. The model is simply also shown the
+      // diff, in the user turn, where the rest of the repo context already is.
+      { role: 'system', content: definition.model_prompt },
+      { role: 'user', content: context },
+    ],
+    { model }
+  );
+
+  // Repo-level doc generation has no session to attribute to (see ROADMAP.md
+  // Phase 8) - sessionId is null, same as every other repo-wide, not per-CO,
+  // record in this codebase. repo_id IS set, on both paths identically, so
+  // "what is this repo costing us" keeps its answer for free.
+  //
+  // Derived from the key rather than stored per definition (Phase 23's spec
+  // entry carried a literal 'spec_doc' call site to protect its spend history;
+  // with no built-in types left there is no history to protect and a
+  // hand-pickable call site would just be another immutable field to get
+  // wrong).
+  usageService
+    .recordUsage({
+      callSite,
+      sessionId: null,
+      repoId: repo.id,
+      provider: result.provider,
+      model: result.model,
+      usage: result.usage,
+      price: result.price,
+    })
+    .catch(() => {});
+
+  return result.text;
+}
 
 async function generateForJob(job, definition) {
   const [[repo]] = await db.query(
@@ -45,39 +108,17 @@ async function generateForJob(job, definition) {
     model = fallback.model_id;
   }
 
-  const context = await docContext.build(org, repo, repo.default_branch_name);
-  const result = await modelAdapter.generate(
-    [
-      // Verbatim. No house template wraps it, and neither the title nor the
-      // description is interpolated into it (see ROADMAP.md Phase 24): the
-      // field is called a prompt and an admin debugging a bad document has to
-      // be able to see the exact text that was sent.
-      { role: 'system', content: definition.model_prompt },
-      { role: 'user', content: context },
-    ],
-    { model }
-  );
-  const content = result.text;
-  // Repo-level doc regen has no session to attribute to (see ROADMAP.md
-  // Phase 8) - sessionId is null, same as every other repo-wide, not
-  // per-CO, record in this codebase.
-  //
-  // Derived from the key rather than stored per definition (Phase 23's spec
-  // entry carried a literal 'spec_doc' call site to protect its spend history;
-  // with no built-in types left there is no history to protect and a
-  // hand-pickable call site would just be another immutable field to get
-  // wrong).
-  usageService
-    .recordUsage({
-      callSite: `doc:${definition.doc_key}`,
-      sessionId: null,
-      repoId: repo.id,
-      provider: result.provider,
-      model: result.model,
-      usage: result.usage,
-      price: result.price,
-    })
-    .catch(() => {});
+  // No compareBase: the nightly document is written from trunk and trunk only,
+  // so the context built here is byte-identical to Phase 24's (see
+  // docContext.build).
+  const content = await generate({
+    org,
+    repo,
+    definition,
+    model,
+    callSite: `doc:${definition.doc_key}`,
+    ref: repo.default_branch_name,
+  });
 
   await db.query(
     `INSERT INTO repo_documents (repo_id, doc_type, co_number, content) VALUES (?, ?, '', ?)
@@ -143,4 +184,4 @@ async function drainQueuedJobs() {
   }
 }
 
-module.exports = { drainQueuedJobs };
+module.exports = { generate, drainQueuedJobs };

@@ -161,6 +161,11 @@ Note the model is stamped on each job when the **nightly scan enqueues it**, not
 runs. Changing the setting does not retarget jobs already queued; those generate with the
 model they were queued under.
 
+An **on-demand branch run** resolves the model at run time instead, there being no
+scan/drain gap for a catalog change to straddle — so it picks up a model change
+immediately, where a queued nightly job does not. It surfaces the same fallback as a
+warning on the report itself, naming the model that actually wrote it.
+
 ## Model / NIM issues
 
 **A clarification question, codegen turn, or doc generation comes back garbled (e.g. a
@@ -312,6 +317,11 @@ Generated documents regenerate via `apex-doc-worker`, a one-shot script run nigh
 by cron (`make doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
 `apex-worker`'s AI-pipeline queue. If one looks stale:
 
+(This is about the documents on a repo's **Documents** page. An on-demand branch run is
+a different thing entirely and cannot be the cause: it stores nothing, so it neither
+refreshes a stale document nor prevents one from refreshing. See "An on-demand document
+run failed" below.)
+
 1. **Check that a document is defined at all, and that it is active, on
    `/admin/documents`** (ROADMAP.md Phase 24). Apex ships with no document definitions —
    on a fresh install nothing is generated and nothing is wrong; `logs/doc-worker.log`
@@ -342,6 +352,58 @@ by cron (`make doc-worker`; see ROADMAP.md Phase 15), completely decoupled from
 6. If the log says the configured model was missing or disabled and the catalog default
    was used instead, the document *was* generated — just not by the model the admin
    picked. Re-pick it on `/admin/documents`.
+
+## "Run a document against this branch" isn't on the branch page
+
+The panel is absent — not greyed out — whenever it cannot be used, so there are three
+things to check, and they answer different questions (ROADMAP.md Phase 25). None
+subsumes another:
+
+1. **Is any document active at all?** The picker is populated from the same active
+   definitions the nightly scan uses, so an install with nothing defined on
+   `/admin/documents` has no panel. Same first check as the entry above.
+2. **Is `on_demand_docs_enabled` on for this repo?** `/admin/repos` → the "On-demand
+   runs" checkbox on that repo's row. It defaults to **on**, including for repos added
+   before Phase 25, so if it is off someone turned it off — `admin_audit_log`
+   (`repo.update`, whose detail carries `onDemandDocsEnabled`) says who and when. This
+   flag gates on-demand runs **only**: that repo's nightly documents keep regenerating
+   either way, so "the nightly document is arriving" is not evidence that this is on.
+3. **Is the whole site able to run anything?** A maintenance window or an empty/disabled
+   model catalog blocks every model call, on-demand runs included. The banner at the top
+   of the page says so; see "The whole site shows..." above.
+
+If the panel is there but the run is refused, the refusal names which of those it was.
+The gates are all re-checked when the button is pressed, not just when the page is
+rendered, so a stale tab or a bookmarked URL is refused rather than honoured.
+
+## An on-demand document run failed, or never came back
+
+This is the one web route that calls a model synchronously, and it takes 30–60 seconds
+(ROADMAP.md Phase 25 accepts this risk deliberately, in exchange for storing no
+results). Two distinct failures:
+
+- **A reported error on the branch page** — the run got far enough to say what went
+  wrong: a refusal from one of the gates above, a GitHub failure reading the branch, or
+  a provider error. Retry; nothing was left half-done, because nothing is written.
+- **A browser timeout, or a 504 with no Apex error page** — the request outlived a
+  gateway, proxy or load-balancer timeout. No other route here can hit this, so check
+  the reverse proxy's read timeout rather than Apex's logs. The generation itself may
+  well have completed; the report is simply unreachable, because nothing stores it. A
+  `usage_events` row with a `doc_run:` call site is how you tell the model was actually
+  billed. The intended fix is a progress-polled run, not a bigger timeout.
+
+One more thing that looks like a failure and is not: **"You already have a document run
+in progress."** One run at a time per user, as a double-click and impatient-reload guard
+(not a quota). It clears as soon as the first run finishes or fails. It is held in the
+web process's memory, so it does not survive a restart and is not shared across
+replicas.
+
+Note that an on-demand run writes **nothing** — no `repo_documents` row, no
+`repo_doc_sync` update, no `doc_jobs` row. If a report looked wrong and you want to
+compare it against something, there is nothing stored to compare: the only trace is the
+`usage_events` row (`doc_run:<doc_key>`, with the repo attributed) and the `audit_log`
+row (`document_run`, with the user and branch). Two users running the same document
+against the same branch an hour apart can get different text, with no record of either.
 
 ## I edited a document's prompt and nothing changed
 

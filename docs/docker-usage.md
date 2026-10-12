@@ -121,7 +121,11 @@ sibling sandbox container.
 
 - `apex-app` (the web process) never touches the Docker socket or creates sandbox
   containers directly — only `worker.js` does, consistent with the
-  Docker-outside-of-Docker setup above.
+  Docker-outside-of-Docker setup above. It does need **NIM network access** since
+  Phase 25, for on-demand document runs against a branch: that route calls the model
+  inside the HTTP request, so a request there can run 30–60 seconds. Anything proxying
+  in front of `apex-app` needs a read timeout that tolerates it (see
+  [apex_troubleshooting.md](../apex_troubleshooting.md)).
 - `docWorker.js` doesn't use Docker/sandboxing at all — it only needs GitHub and
   NIM network access, so it runs on the plain Node image the same way `make dev` does.
   It's also the one container here that isn't long-running: `make doc-worker`

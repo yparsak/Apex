@@ -234,7 +234,10 @@ Three of these are fixed points in the AI pipeline. The fourth is not a single c
 site any more but a **registry of them sharing one code path** (see ROADMAP.md
 Phase 23): every generated document type is its own prompt, its own context builder and
 its own `usage_events.call_site`, run by the same job mechanics. The count is no longer
-fixed, and a new document type adds a call site without adding any code here.
+fixed, and a new document type adds a call site without adding any code here. Since
+Phase 25 each of those also has a second call site — the on-demand branch run, billed
+separately as `doc_run:<doc_key>` — reached from the web tier rather than the nightly
+worker, but through the same `docService.generate`.
 
 ### 1. Clarification — [clarificationService.js](app/lib/clarificationService.js)
 
@@ -450,11 +453,25 @@ clarification would.
 
 ### 4. Generated documents — [docService.js](app/lib/documents/docService.js) over [docContext.js](app/lib/documents/docContext.js)
 
-Runs during `docWorker.js`'s nightly, one-shot cron invocation (see ROADMAP.md
-Phase 15), once per `(repo, active document)` that has gone stale.
-`docService.js` owns only the mechanics shared by every document — model resolution, the
-`generate` call, the `usage_events` write (billed to `doc:<doc_key>`), the
-`repo_documents` upsert, the `repo_doc_sync` write, and one try/catch per job.
+Reached two ways since Phase 25, with the same prompt, the same context builder and the
+same `generate` call:
+
+| | **Nightly** | **On demand** |
+|---|---|---|
+| Triggered by | `docWorker.js`'s one-shot cron invocation (ROADMAP.md Phase 15), once per `(repo, active document)` gone stale | a user clicking **Run against this branch** on a branch page ([docRunService.js](app/lib/documents/docRunService.js)) |
+| Ref read | the repo's default branch | the branch, **plus a diff block** vs. the default branch |
+| Model | stamped on the `doc_jobs` row at enqueue | resolved at run time (no scan/drain gap to straddle) |
+| `usage_events.call_site` | `doc:<doc_key>` | `doc_run:<doc_key>` |
+| Stored | `repo_documents` + `repo_doc_sync` | **nothing** — rendered in the response and gone on refresh |
+
+`docService.generate` is the shared half (build the context, call the model, bill the
+call); `generateForJob` is the nightly caller that adds the two writes. The split exists
+so there is no second copy of the generate call to drift — the failure mode being a
+prompt change that only takes effect at night.
+
+The on-demand path is also the first place the **web tier calls a model synchronously**;
+until Phase 25 only `worker.js` and `docWorker.js` did. See ROADMAP.md Phase 25 for the
+accepted risk (gateway timeouts) and why the diff cap is the mitigation.
 
 **The system prompt for this call site is not in the code.** Since Phase 24 there are no
 built-in document types: the system message is `doc_definitions.model_prompt`, a column
@@ -494,6 +511,21 @@ Regeneration is triggered by `(trunk sha, prompt_revision)` differing from the
 `repo_doc_sync` row, so editing a prompt regenerates every repo's copy on the next
 nightly run even though nothing moved in git.
 
+**The on-demand run adds one block to that material, and nothing else.** The prompt is
+still sent verbatim; what changes is that the user turn gains a
+`=== CHANGES ON THIS BRANCH (vs <trunk>) ===` section built from
+`githubApi.compareCommits`, listing every changed file and including the **full contents**
+of each as it stands on the branch — not the patches. Hunks are the wrong input for a
+practices review: three lines of context cannot support a judgment about a function. Two
+caps apply on top of the usual per-file clipping — **40 files** and **120,000 characters**
+— and anything they drop is named in the block, with the model told explicitly that it
+has not seen those files and should say so. A review that silently covered 40 of 300
+changed files while presenting itself as complete is worse than one that admits the gap:
+the engineer trusts it and merges.
+
+With no diff block the context is **byte-for-byte** what Phase 24 produced, which is what
+makes "the nightly document is unaffected" checkable rather than a judgment call.
+
 ## Limits at a glance
 
 None of the pre-existing values here has changed since they were first set. What Phase
@@ -522,6 +554,8 @@ these are written down outside code, so it names the module.
 | `MAX_CUT_OFF_REPLIES` | 2 | `codegenService.js` | Codegen — `max_tokens`-cutoff replies tolerated per run |
 | `MAX_DIFF_CHARS` | 12,000 | `overlapService.js` | Overlap detection — total diff text |
 | `MAX_PATCH_CHARS_PER_FILE` | 2,000 | `overlapService.js` | Overlap detection — per-file patch, before the total cap above |
+| `MAX_DIFF_FILES` | 40 | `app/lib/documents/docContext.js` | On-demand document run — changed files included in the diff block |
+| `MAX_DIFF_CHARS` | 120,000 | `app/lib/documents/docContext.js` | On-demand document run — total diff-block text (**same name, different module and value** from `overlapService.js`'s: that one caps *patches* for a yes/no overlap question, this one caps *whole files* for a review) |
 | `MAX_INSTRUCTIONS_LENGTH` | 6,000 | `repoClarificationInstructions.js` | Admin clarification instructions — enforced at save time, not read time |
 
 Every call site that accepts admin-authored `repo_clarification_instructions` (all of

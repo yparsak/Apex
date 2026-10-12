@@ -11,6 +11,7 @@ const pipelineRunner = require('../lib/pipeline/pipelineRunner');
 const pipelineStepper = require('../lib/pipelineStepper');
 const documentsService = require('../lib/documents/documentsService');
 const docDefinitions = require('../lib/documents/docDefinitions');
+const docRunService = require('../lib/documents/docRunService');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -356,12 +357,15 @@ async function renderBranchPage(req, res, access, branch, session, error) {
   ]);
   const lockHeld = !!lock && lock.session_id === session.id;
 
-  const [branches, conversation, [requirements], [[latestRun]], coSection] = await Promise.all([
+  const [branches, conversation, [requirements], [[latestRun]], coSection, runnableDocuments] = await Promise.all([
     branchService.listActiveBranches(access.repo, access.org),
     clarificationService.getConversation(session.id),
     db.query('SELECT * FROM session_requirements WHERE session_id = ? ORDER BY id ASC', [session.id]),
     db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [session.id]),
     documentsService.getCoSection(access.repo.id, branch.co_number),
+    // Empty when the repo has on-demand runs off, which the view reads as "no
+    // panel at all" (see ROADMAP.md Phase 25).
+    docRunService.listRunnableDocuments(access.repo),
   ]);
 
   const pendingRequirement = requirements.find((r) => r.confirm_status === 'pending_confirm') || null;
@@ -416,6 +420,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     topStepper,
     subStepper,
     coSection,
+    runnableDocuments,
     error,
   });
 }
@@ -427,6 +432,77 @@ router.get('/:repoId/branches/:branchId', async (req, res) => {
   const loaded = await loadBranchSession(req, res, access);
   if (!loaded) return;
   await renderBranchPage(req, res, access, loaded.branch, loaded.session, null);
+});
+
+// On-demand document run against this branch (see ROADMAP.md Phase 25). The
+// report is generated IN this request and rendered in its response: nothing is
+// written to repo_documents, repo_doc_sync or doc_jobs, so the nightly trunk
+// document for this repo is bit-identical to what it would have been had the
+// run never happened, and the download button on the result page builds its
+// file client-side from the text already on screen.
+//
+// The accepted risk this route carries (see ROADMAP.md Phase 25): the web tier
+// now calls a model synchronously, which until Phase 25 only worker.js and
+// docWorker.js did. A 30-60 second request is exposed to gateway and
+// load-balancer timeouts no other route here can hit, and the failure mode is an
+// opaque 504 rather than a reported error. Accepted in exchange for no results
+// table, no polling and no expiry story; the mitigations are docContext's diff
+// cap keeping generations bounded and the panel saying plainly that the run
+// takes a minute. If deployment timeouts prove this wrong, the fix is a
+// progress-polled run, not a bigger timeout.
+router.post('/:repoId/branches/:branchId/document-run', async (req, res) => {
+  const access = await loadAccess(req, res);
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  let result;
+  try {
+    result = await docRunService.runForBranch({
+      org: access.org,
+      repo: access.repo,
+      branch,
+      docKey: (req.body.doc_key || '').trim(),
+      user: req.session.user,
+    });
+  } catch (err) {
+    // Every gate in docRunService throws a refusal with a sentence worth
+    // showing; a GitHub or provider failure arrives here too, and gets the same
+    // treatment rather than a raw 500, consistent with the clarification loop
+    // above. Either way the user is back on the branch page with the reason,
+    // and can simply try again.
+    return renderBranchPage(req, res, access, branch, session, err.message);
+  }
+
+  // Logged because usage_events has no user column: repo_id answers "what is
+  // this repo costing us", and this row is the only thing that answers "who
+  // asked for it". It is also the only record that the run happened at all,
+  // the report itself being deliberately unstored.
+  await auditLog.logAction({
+    sessionId: session.id,
+    userId: req.session.user.id,
+    action: 'document_run',
+    detail: `${result.definition.doc_key} against ${branch.branch_name}`,
+  });
+
+  res.render('document-run', {
+    user: req.session.user,
+    repo: access.repo,
+    org: access.org,
+    branch,
+    branches: await branchService.listActiveBranches(access.repo, access.org),
+    definition: result.definition,
+    model: result.model,
+    usedFallback: result.usedFallback,
+    content: result.content,
+    // Built here rather than in the browser so the slashes in a dev/ branch
+    // name cannot become path separators in a download, and so the filename
+    // says which document and which branch it came from - the report carries
+    // no other provenance once it leaves the page.
+    downloadFilename: `${result.definition.doc_key}-${branch.branch_name.replace(/[^A-Za-z0-9._-]+/g, '-')}.md`,
+  });
 });
 
 router.post('/:repoId/branches/:branchId/messages', async (req, res) => {

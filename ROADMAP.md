@@ -2446,6 +2446,106 @@ regenerates on schedule, unaffected.
   record of either. That is inherent to "not stored" and is the point, not an oversight —
   the artifact of record is still the nightly trunk document.
 
+### Implementation notes
+
+Built as planned. Five details worth recording, none of which was in the plan:
+
+- **The gates got their own module rather than living in the route.**
+  `app/lib/documents/docRunService.js` holds all five (repo flag, `is_active` re-read,
+  maintenance lock, in-flight guard, model resolution) and the route holds none. The
+  plan did not name a module, and putting them in `app/routes/repos.js` would have been
+  the obvious reading — but the route already runs to 700 lines of pipeline actions, and
+  the ordering of these checks is the whole of the phase's "refused without resolving a
+  model or calling GitHub" requirement. That ordering deserves to be readable in one
+  screen, not interleaved with `res.render` calls. The module also owns
+  `listRunnableDocuments`, so the view's "no panel" condition and the route's "refused"
+  condition are two functions in one file rather than two files that have to agree.
+
+- **The in-flight guard is a process-local `Set`, not a row.** The plan said "one
+  in-flight run per user" without saying where it lives. A table or a lock row would
+  outlive the crash of the process holding it and leave a user permanently unable to
+  start a run — turning a double-click guard into a support ticket. The honest cost is
+  that it does not hold across replicas, which is the right trade for something whose
+  entire job is to absorb an impatient reload. Released in a `finally`, for the same
+  reason: a failed generation that left the id behind would lock the user out for the
+  lifetime of the process. The claim is also made with **no `await` between the `has`
+  and the `add`** — the first draft resolved the model in between, which left exactly
+  the window that lets both halves of a double-click through, i.e. the one case the
+  guard is for.
+
+- **`githubApi.compareCommits` gained GitHub's `status` field.** The plan has the diff
+  block reading changed files in full through `readFileForModel`, which cannot work for
+  a file the branch *deletes* — there is nothing at the head ref to read, and the reader
+  would have reported a file the change deliberately removed as mysteriously missing.
+  Deleted files are now listed by name and not read. The field is additive and
+  `overlapService.js`, the only other caller, ignores it.
+
+- **The diff cap is two caps, and the character one is checked after formatting.** A
+  file-count cap alone would pass a three-file change that rewrites a vendored bundle;
+  a character cap alone would pass 300 one-line changes as 300 separate file blocks. The
+  character budget is decremented by the length of the *formatted* block rather than the
+  raw file, because the budget is about what actually reaches the model — and a file
+  that would overshoot is dropped by name rather than half-included. One exception: the
+  first file is always included even if it alone exceeds the budget, since a diff block
+  that silently contains nothing is worse than one that is too long.
+
+- **`docContext.build` returns the Phase 24 string by construction, not by care.** The
+  no-diff return is built as the original single template expression and the diff block
+  is appended to it, rather than the whole thing being rebuilt from a list of parts. The
+  list version was written first and was wrong in exactly one case — a repo with none of
+  the three key files, where `[tree, ...[]].join('\n\n')` drops the trailing separator
+  the original expression leaves behind. Byte-identical has to mean byte-identical for
+  the acceptance test to be a test.
+
+Deviation from the plan: the per-repo switch is a checkbox inside the existing
+`/admin/repos` row form rather than its own control, so an unchecked box means off by
+absence. Safe only because that form is a whole-row save — there is no partial repo
+update that could clear the flag as a side effect — and it keeps a repo's settings to
+one Save button.
+
+### Files
+
+Added: `app/lib/documents/docRunService.js` (the gates and the in-flight guard),
+`views/document-run.ejs` (the result page, and the codebase's first inline `<script>` —
+the download button reads the report out of the DOM rather than having it interpolated
+into JS, so no amount of backticks or `</script>` in a generated document can break it).
+
+Changed, beyond the obvious: `db/schema.sql` (`repos.on_demand_docs_enabled`,
+`usage_events.call_site` 50 → 80), `docContext` (the optional diff block and its two
+caps), `docService` (`generate` split out of `generateForJob`), `githubApi`
+(`compareCommits` passes through `status`), `repoAccess` (carries the flag as a boolean,
+for the view only), `app/routes/repos.js` + `views/branch.ejs` (the panel and the run
+route), `app/routes/admin/repos.js` + `views/admin/repos.ejs` (the switch, with a label
+that says what it does *not* gate).
+
+### Verification
+
+**Not run.** This working copy has no Node runtime and no container runtime available,
+so nothing below the level of reading the code was exercised: no syntax check, no
+migration replay, no HTTP request, no stubbed generation. That is a real gap against
+every phase since 22, each of which was driven against a running stack and a real
+MariaDB, and it is recorded here rather than papered over.
+
+What that leaves unconfirmed, in the order it should be checked when a runtime is
+available:
+
+1. `make migrate` on a pre-Phase-25 database, replayed twice: the column appears
+   defaulting to 1 on existing repos, and `call_site` widens without touching a row.
+2. The phase's own acceptance test — a trunk regeneration's context byte-compared
+   against Phase 24's, with `compareBase` absent. The code is written so this holds by
+   construction; that is not the same as having seen it hold.
+3. A branch run end to end with `modelAdapter.generate` and `githubApi.compareCommits`
+   stubbed, asserting the three tables are untouched, the `usage_events` row carries
+   `doc_run:<doc_key>` and the right `repo_id`, and the next scan enqueues exactly what
+   it would have enqueued anyway.
+4. Both directions of the per-repo switch, including a direct POST to the run route with
+   the flag off — which must refuse before resolving a model or calling GitHub — while
+   that repo's nightly document still regenerates.
+5. The diff caps, against a branch changing more than 40 files and against one changing
+   a single file larger than the character budget.
+6. The download button in a browser, on a report containing backticks and a literal
+   `</script>`.
+
 ## Phase 26 — `/admin/documents` as a list, not a stack of forms
 
 Phase 24 made documents admin-authored and left the page that authors them rendering

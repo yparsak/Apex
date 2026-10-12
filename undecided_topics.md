@@ -190,6 +190,48 @@ by a later definition. Still open:
   in [ROADMAP.md](ROADMAP.md)). No real NIM request was issued, same gap as Phases 22
   and 23.
 
+## On-demand Document Runs (Phase 25)
+
+Built. A user can run any active definition against a branch from that branch's page and
+read the result immediately; the report is generated inside the request and stored
+nowhere. This closes nothing above — definitions are still global, still read the same
+three files, still have no history — and opens the following:
+
+- **The web tier now calls a model synchronously.** Until Phase 25 only `worker.js` and
+  `docWorker.js` did. A 30–60 second request is exposed to gateway, proxy and
+  load-balancer timeouts no other route in Apex can hit, and the failure mode is an
+  opaque 504 rather than a reported error. Accepted in exchange for having no results
+  table, no polling and no expiry story. The mitigations are the diff cap and the UI
+  saying the run takes a minute. If deployment timeouts prove this wrong the fix is a
+  progress-polled run, not a bigger timeout — and that fix reintroduces every question
+  "not stored" was chosen to avoid.
+- **A prompt authored for trunk may read oddly against a diff.** Definitions have no
+  scope flag, so "Spec / Communication Protocol" can be pointed at a feature branch and
+  return a repo summary distorted by whatever happens to be in the change. A
+  `scope = trunk | on_demand | both` column is a real answer to a real mismatch and was
+  deliberately deferred: which definitions people actually point at branches is the
+  thing this phase exists to find out, and the column would be a schema change and an
+  admin-form field added before anyone has run a single report.
+- **A report is unreproducible, by design.** Two users running the same document against
+  the same branch an hour apart can get different text with no record of either. The
+  only traces are a `usage_events` row (`doc_run:<doc_key>`, repo attributed, no user)
+  and an `audit_log` row (`document_run`, user and branch, no content). The artifact of
+  record is still the nightly trunk document.
+- **The in-flight-per-user guard is process-local.** A `Set` in the web process, so it
+  does not hold across replicas and does not survive a restart. Correct for a
+  double-click guard; it is not and must not be read as a quota. A per-user daily cap
+  was deliberately not built — `/admin/usage` now separates this spend by call site, so
+  that decision can be made against real numbers.
+- **Pull requests are out of scope and may be the wrong entry point.** `githubApi` has
+  no PR endpoints, and adding them needs a new GitHub App permission scope and a
+  re-consented installation; a PR run and a branch run would compare the same two refs
+  anyway. Reconsidered only if the branch picker turns out to be the wrong way in.
+- **Nothing was verified at runtime.** Unlike Phases 22–24, this phase was implemented
+  on a machine with no Node and no container runtime: no syntax check, no migration
+  replay, no HTTP request, no stubbed generation. ROADMAP.md Phase 25's Verification
+  section lists what to check, in order, when a runtime is available. This is the
+  largest open item on the list.
+
 ## Platform Extensibility (carried forward from notes.md, unscheduled)
 
 - **SSO** — `authProvider` interface supports it, and Phase 17 decided provider

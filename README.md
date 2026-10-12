@@ -85,6 +85,36 @@ Two things worth knowing up front:
 Adding a new kind of document is a form submission. It is not a deploy, not a schema
 change, and not a ticket.
 
+### Running a document against a branch, before the merge
+
+The nightly run reads the default branch, which makes every document a **post-merge**
+artifact: an admin writes a "Coding Practices" definition, an engineer opens a pull
+request, and the first time that prompt sees the new code is the night after it has
+already landed. The report still catches the problem — one merge too late.
+
+So any active document can also be run **on demand against a branch**, from that
+branch's page: pick a document, click **Run against this branch**, wait about a minute,
+read the report. Nothing about authorship changes — the admin still owns the title,
+prompt and model, and a user picks only a branch and a document.
+
+Two things make it worth doing, and one thing is worth being clear about:
+
+- **The branch run also reads the diff.** On a feature branch the three key files above
+  are almost always byte-identical to trunk's, so a report written from those alone
+  would just repeat what the nightly one said. The run adds the **full contents** of
+  every file the branch changes — not the patches, which are too little context to judge
+  a function by. Large changes are capped (40 files / 120,000 characters) and whatever
+  is left out is named in the prompt, so the model says what it did not see rather than
+  presenting a partial review as complete.
+- **The report is not saved.** It is generated while you wait, shown once, and gone on
+  refresh — download it with the button on the page if you want to keep it. Nothing is
+  written to the repo's Documents page, and the next nightly run behaves exactly as if
+  the run never happened. The artifact of record is still the nightly document.
+- **Per repo, an admin can turn this off** on `/admin/repos` ("On-demand runs"), for a
+  repo whose branch diffs are too large to review usefully or whose model spend needs
+  containing. Turning it off does **not** stop that repo's nightly documents, which keep
+  arriving either way.
+
 ## Documentation
 
 | Document | For |
@@ -156,7 +186,10 @@ make clean      # full reset - also removes the data volume and network
   until someone creates one — see "Recreating the Spec / Communication Protocol
   document" below. Adding a document type is a form submission, not a deploy.
   `app/lib/documents/docContext.js` is the shared builder for what the model reads,
-  which is the same material for every document.
+  which is the same material for every document — plus, for an on-demand branch run
+  only, the contents of what that branch changes. Those runs do not go through this
+  worker at all: `app/lib/documents/docRunService.js` runs them inside the web request
+  that asked for one, and stores nothing.
 - `db/schema.sql` — full data model, applied up front by `make setup`.
 - `docs/` — setup guide, key-rotation runbook, Docker usage, and other operational docs.
 

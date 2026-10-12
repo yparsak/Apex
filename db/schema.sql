@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS repos (
   name VARCHAR(255) NOT NULL,
   description VARCHAR(500) NULL,
   default_branch_name VARCHAR(255) NOT NULL DEFAULT 'main',
+  -- Phase 25: may users run an admin-defined document against this repo's
+  -- BRANCHES, on demand, from the branch page. It gates that feature and
+  -- nothing else - the nightly trunk scan keeps generating for this repo
+  -- either way, which is why the admin form's label has to say so out loud.
+  --
+  -- Defaults to ON. An admin already controls which documents exist
+  -- (doc_definitions.is_active) and which model each runs against, so this
+  -- third gate is for the exception - a monorepo whose diffs blow the cap, a
+  -- repo whose spend needs containing - not the norm. Defaulting to off would
+  -- ship the feature invisible behind a switch nobody knows to look for.
+  on_demand_docs_enabled TINYINT(1) NOT NULL DEFAULT 1,
   -- Superseded by the repo_doc_sync table in Phase 23 and no longer read or
   -- written by any code. Kept, not dropped: the backfill below reads it, and
   -- dropping a column is the one genuinely irreversible step in that migration
@@ -451,10 +462,17 @@ CREATE TABLE IF NOT EXISTS usage_events (
   -- are derived from doc_definitions rows an admin creates, and a document
   -- created this morning has to be able to bill itself without a migration.
   -- 'overlap_check', 'clarification' and 'codegen' are the fixed values;
-  -- documents bill as 'doc:<doc_key>'. 'spec_doc' is retired (Phase 24) -
+  -- nightly documents bill as 'doc:<doc_key>' and Phase 25's on-demand branch
+  -- runs as 'doc_run:<doc_key>', so proactive user-triggered spend separates
+  -- from nightly spend on /admin/usage. 'spec_doc' is retired (Phase 24) -
   -- rows written before then keep it and stay queryable, but nothing writes
   -- it any more.
-  call_site VARCHAR(50) NOT NULL,
+  --
+  -- 80, not 50: 'doc_run:' plus a full-length 50-character doc_key needs 59,
+  -- and even 'doc:' plus one needed 54 - so the old width was already a live
+  -- defect for a definition whose title slugged past 45 characters (silently
+  -- truncated or rejected, depending on the server's strict mode).
+  call_site VARCHAR(80) NOT NULL,
   session_id INT UNSIGNED NULL,
   repo_id INT UNSIGNED NULL,
   provider VARCHAR(50) NOT NULL,
@@ -737,6 +755,24 @@ ALTER TABLE repo_doc_sync ADD COLUMN IF NOT EXISTS synced_prompt_revision INT NO
 -- the DELETE, but the fact that no code path can recreate these keys.
 DELETE FROM app_settings WHERE setting_key = 'doc_types_enabled';
 DELETE FROM app_settings WHERE setting_key LIKE 'doc_model_id:%';
+
+-- ---------------------------------------------------------------------------
+-- Phase 25: on-demand document runs against a branch
+--
+-- Upgrade path for a database created before Phase 25; on a fresh install both
+-- statements are no-ops, because the definitions above already describe the end
+-- state. An unstored report has nothing to store, so this is the whole of it.
+-- ---------------------------------------------------------------------------
+
+-- Existing repos get the feature ON, same as new ones. Deliberate: an upgrade
+-- that silently left every repo opted out would ship the feature invisible.
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS on_demand_docs_enabled TINYINT(1) NOT NULL DEFAULT 1
+  AFTER default_branch_name;
+
+-- 50 -> 80 so 'doc_run:<doc_key>' fits. A widening MODIFY preserves every
+-- existing row verbatim and is naturally idempotent (it restates the target
+-- type), same as the Phase 23 ENUM -> VARCHAR above.
+ALTER TABLE usage_events MODIFY COLUMN call_site VARCHAR(80) NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is

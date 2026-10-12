@@ -7,6 +7,7 @@ const router = express.Router();
 async function renderRepos(req, res, error) {
   const [repos] = await db.query(
     `SELECT r.id, r.name, r.description, r.default_branch_name, r.repo_group_id,
+            r.on_demand_docs_enabled,
             rg.name AS repo_group_name, o.name AS org_name
      FROM repos r
      JOIN repo_groups rg ON rg.id = r.repo_group_id
@@ -54,17 +55,23 @@ router.post('/:id/update', async (req, res) => {
   const repoGroupId = Number(req.body.repo_group_id);
   const description = (req.body.description || '').trim() || null;
   const defaultBranchName = (req.body.default_branch_name || '').trim() || 'main';
+  // Part of the row form, so an unchecked box is an absent field (see
+  // ROADMAP.md Phase 25). Absent therefore has to mean off, which is only safe
+  // because this is the full-row save - there is no partial update of a repo
+  // that could clear the flag as a side effect.
+  const onDemandDocsEnabled = req.body.on_demand_docs_enabled ? 1 : 0;
   if (!name || !repoGroupId) return renderRepos(req, res, 'Repo group and name are required.');
 
   try {
     await db.query(
-      'UPDATE repos SET repo_group_id = ?, name = ?, description = ?, default_branch_name = ? WHERE id = ?',
-      [repoGroupId, name, description, defaultBranchName, req.params.id]
+      `UPDATE repos SET repo_group_id = ?, name = ?, description = ?, default_branch_name = ?,
+         on_demand_docs_enabled = ? WHERE id = ?`,
+      [repoGroupId, name, description, defaultBranchName, onDemandDocsEnabled, req.params.id]
     );
     await logAdminAction({
       adminUserId: req.session.user.id,
       action: 'repo.update',
-      detail: { repoId: Number(req.params.id), repoGroupId, name },
+      detail: { repoId: Number(req.params.id), repoGroupId, name, onDemandDocsEnabled },
     });
     res.redirect('/admin/repos');
   } catch (err) {

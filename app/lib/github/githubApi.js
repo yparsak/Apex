@@ -144,9 +144,16 @@ async function getFileContent(owner, repo, path, ref) {
   return Buffer.from(data.content, data.encoding || 'base64').toString('utf8');
 }
 
-// compareCommits(owner, repo, base, head) -> { files: [{ filename, patch }] }.
-// Used by overlapService.js to see what's already landed on the DEV branch
-// vs. the repo's default branch.
+// compareCommits(owner, repo, base, head) -> { files: [{ filename, status,
+// patch }] }. Used by overlapService.js to see what's already landed on the DEV
+// branch vs. the repo's default branch, and by docContext.js to build the diff
+// block an on-demand document run is shown (see ROADMAP.md Phase 25).
+//
+// `status` is GitHub's own ('added' / 'modified' / 'removed' / 'renamed' / ...)
+// and is passed through rather than inferred: docContext reads each changed
+// file at the head ref, and a file removed on the branch has nothing to read
+// there - without the status it would be reported as mysteriously missing
+// instead of as deleted by the change under review.
 async function compareCommits(owner, repo, base, head) {
   const res = await githubRequest(
     'GET',
@@ -154,7 +161,13 @@ async function compareCommits(owner, repo, base, head) {
   );
   if (!res.ok) throw new Error(`GitHub compareCommits ${owner}/${repo} ${base}...${head} failed: HTTP ${res.status}`);
   const data = await res.json();
-  return { files: (data.files || []).map((f) => ({ filename: f.filename, patch: f.patch || null })) };
+  return {
+    files: (data.files || []).map((f) => ({
+      filename: f.filename,
+      status: f.status || null,
+      patch: f.patch || null,
+    })),
+  };
 }
 
 module.exports = {

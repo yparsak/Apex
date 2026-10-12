@@ -29,7 +29,7 @@ Apex is three independent Node.js processes plus a database, each its own contai
 
 | Process | Entry point | Responsibility |
 |---|---|---|
-| `apex-app` | [app.js](app.js) | Express + EJS web app. Auth, repo/branch browsing, the clarification UI, admin screens, document views. |
+| `apex-app` | [app.js](app.js) | Express + EJS web app. Auth, repo/branch browsing, the clarification UI, admin screens, document views. Since Phase 25 it also calls a model **synchronously**, for on-demand document runs against a branch — the one route here that can take a minute. |
 | `apex-worker` | [worker.js](worker.js) | Polls `sessions` for `queued` rows, one at a time, and drives each one's full sandboxed pipeline (clone → codegen → build → test → push) via [pipelineRunner.js](app/lib/pipeline/pipelineRunner.js). |
 | `apex-doc-worker` | [docWorker.js](docWorker.js) | One-shot script, invoked nightly by cron (`make doc-worker`): scans every repo for a moved trunk (or an edited prompt) and regenerates each **admin-defined** document in `doc_definitions`, retires `repo_file_maps` rows unread for 14 days, then exits. Decoupled from `apex-worker` so a backlog of AI sessions never delays doc regen, or vice versa. Apex ships with no definitions, so a fresh install generates nothing: the worker logs `No Active Document to generate` and exits 0, which is a normal run and not a failure. |
 | `apex-mariadb` | — | MariaDB 11. The only shared state between the three processes above — there's no Redis, no message queue. Locks, job queues, and session state all live in ordinary tables (see [db/schema.sql](db/schema.sql)). |
@@ -150,8 +150,10 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   use the `co_number=''` sentinel in practice — the column stays for schema generality.
   `doc_type` is a `VARCHAR`, not an `ENUM`: document types are admin-created rows, so an
   ENUM would make every new one a DDL change performed by an engineer (the same reason
-  `usage_events.call_site` is a VARCHAR; admin-defined documents bill as
-  `doc:<doc_key>`).
+  `usage_events.call_site` is a VARCHAR; nightly documents bill as `doc:<doc_key>` and
+  Phase 25's on-demand branch runs as `doc_run:<doc_key>`, which is why that column is 80
+  characters rather than 50).
+  **An on-demand run writes nothing here** — see Delivery below.
 - `doc_jobs` — the queue `docWorker.js` drains; one `queued` row per `(repo, doc_type)`
   that has gone stale since that pair's `repo_doc_sync` row. A job whose definition was
   deactivated or deleted between the scan and the drain ends `skipped` rather than
@@ -161,6 +163,12 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   documents go stale independently. The revision is half the staleness test because
   editing a prompt moves nothing in git — without it, a fixed prompt would never
   regenerate until trunk happened to move.
+- `repos.on_demand_docs_enabled` — the per-repo switch for Phase 25's on-demand branch
+  runs, defaulting to **on**. It gates that feature and nothing else: the nightly trunk
+  scan keeps generating for the repo either way. Three independent gates govern documents
+  and none subsumes another — `doc_definitions.is_active` ("should this document exist
+  anywhere"), this flag ("may users run documents against this repo's branches"), and the
+  maintenance lock / circuit breaker ("is the system able to run anything right now").
 
 **Repo structure**
 - `repo_file_maps` — `(repo_id, commit_sha)`, one cached file map per commit: the ranked,
@@ -305,6 +313,16 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
    summaries, each regenerated from scratch by `apex-doc-worker` whenever trunk moves or
    its prompt is edited — unrelated to any specific CO, and never blocked by (or
    blocking) the AI-pipeline queue.
+
+   Those nightly documents are necessarily **post-merge**. Since Phase 25 any of them can
+   also be run **on demand against a branch** from that branch's page, before the merge:
+   same admin-authored prompt and model, but read from the branch and with the full
+   contents of everything it changes vs. trunk added to the context (capped at 40 files /
+   120,000 characters, with whatever is dropped named in the prompt). That report is
+   generated inside the HTTP request, rendered once, downloadable client-side, and
+   **stored nowhere** — no `repo_documents`, no `repo_doc_sync`, no `doc_jobs`, and no
+   effect on what the next nightly scan considers stale. It bills to
+   `doc_run:<doc_key>`, and is gated per repo by `repos.on_demand_docs_enabled`.
 
 7. **Branch lifecycle.** Branches can be explicitly deactivated (Active → Stale) or
    deleted (soft delete — row kept, just hidden from the UI) by any user with access to

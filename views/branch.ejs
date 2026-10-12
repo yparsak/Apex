@@ -88,6 +88,31 @@
       </form>
     <% } %>
 
+    <%# On-demand document runs (see ROADMAP.md Phase 25). Absent entirely -
+        not disabled and greyed - when the repo has the feature off or no
+        document is active, because a control a user can see but never use
+        invites a support ticket the admin has already answered by turning it
+        off. runnableDocuments is empty in both cases. %>
+    <% if (runnableDocuments.length) { %>
+      <h2>Run a document against this branch</h2>
+      <p class="placeholder">
+        Runs one of the documents an administrator has defined against this branch's code,
+        including everything it changes compared to <%= repo.default_branch_name %> — before the merge,
+        rather than the night after. Takes about a minute, and the report is shown once:
+        it is not saved, and it does not affect the repo's nightly documents.
+      </p>
+      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/document-run" class="stacked-form">
+        <label>Document
+          <select name="doc_key" required>
+            <% runnableDocuments.forEach(function(d) { %>
+              <option value="<%= d.doc_key %>"><%= d.title %></option>
+            <% }) %>
+          </select>
+        </label>
+        <button type="submit">Run against this branch</button>
+      </form>
+    <% } %>
+
     <% if (session.status !== 'awaiting_approval') { %>
       <h2>Pipeline</h2>
       <p class="pipeline-status pipeline-<%= session.status %>">Status: <%= session.status %></p>

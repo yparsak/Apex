@@ -1,0 +1,55 @@
+<%- include('partials/head', { title: definition.title + ' - ' + branch.branch_name, user: user }) %>
+  <aside class="sidebar">
+    <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
+  </aside>
+  <main class="content">
+    <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a> / <a href="/repos/<%= repo.id %>/branches/<%= branch.id %>"><%= branch.branch_name %></a></p>
+    <h1><%= definition.title %></h1>
+    <p>Run against <code><%= branch.branch_name %></code>, compared to <code><%= repo.default_branch_name %></code>.</p>
+    <% if (definition.description) { %><p class="placeholder"><%= definition.description %></p><% } %>
+
+    <%# The model is named because the report is unreproducible - nothing records
+        what was generated, so two users running this an hour apart can get
+        different text with no record of either. The model is the one piece of
+        provenance worth putting on the page. %>
+    <p class="placeholder">Written by <code><%= model.display_name || model.model_id %></code>.</p>
+    <% if (usedFallback) { %>
+      <p class="error">
+        The model an administrator chose for this document is missing or disabled, so it was
+        written by the catalog default instead.
+      </p>
+    <% } %>
+
+    <%# Said plainly rather than left for someone to discover by refreshing.
+        "Not stored" is the design (see ROADMAP.md Phase 25), and a page that
+        looks like a saved document but is not is worse than one that says so. %>
+    <p class="error">
+      This report is not saved. Reloading or leaving this page loses it — download it below if
+      you want to keep it. The repo's own documents are unaffected by this run.
+    </p>
+
+    <div class="overlap-actions">
+      <%# Client-side, from the text already in the page: there is no second
+          route, no temp file and no server-side state, which is what makes
+          "not stored" honest rather than aspirational - there is no artifact
+          anywhere to expire. The content is read out of the DOM rather than
+          interpolated into the script, so no amount of backticks or
+          </script> in a generated document can break it. %>
+      <button type="button" id="download-report" data-filename="<%= downloadFilename %>">Download as Markdown</button>
+      <a href="/repos/<%= repo.id %>/branches/<%= branch.id %>">Back to branch</a>
+    </div>
+
+    <pre class="document-body" id="report-body"><%= content %></pre>
+  </main>
+<script>
+  document.getElementById('download-report').addEventListener('click', function () {
+    var text = document.getElementById('report-body').textContent;
+    var url = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+    var link = document.createElement('a');
+    link.href = url;
+    link.download = this.dataset.filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  });
+</script>
+<%- include('partials/foot') %>
