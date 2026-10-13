@@ -2650,6 +2650,96 @@ preserves.
   cell. That is acceptable — the convention being broken was never a decision, just the
   absence of a record big enough to force the question.
 
+### Implementation notes
+
+Built as planned. Six details, none of which was in the plan:
+
+- **The two new GETs render one template, not two.** `views/admin/document-form.ejs`
+  takes `definition` or `null` and branches on it, rather than a `new.ejs` beside an
+  `edit.ejs`. The plan describes them as two pages and they are, but the relocated prose
+  is the point of the phase — it is the only place the system explains its output
+  contract to the person writing a prompt — and two copies of it would have drifted the
+  first time one was edited. What actually differs between the pages is small and
+  explicit: the form action, the Active checkbox (create only — on edit the switch is on
+  the list row), the starter-prompt paragraph, and the Delete block.
+
+- **"Redirects to the list" is a render of the list, not a 302.** The plan's wording for
+  an unknown or archived id cannot be a redirect without somewhere to put the message,
+  and this app has no flash: every admin router's existing "That X no longer exists."
+  path renders its own list with the error in place (`models.js`:87 and :148 are the
+  precedent). So `GET /:id/edit` on a dead id renders the list with the message and the
+  URL stays on `/edit`. The user-visible behavior is what the plan asked for — the list,
+  with the explanation, and no empty form.
+
+- **`docDefinitions.getById` now refuses a non-integer id, and that was a live crash.**
+  Verification hit it on the first junk URL: `GET /admin/documents/abc/edit` →
+  `Number('abc')` → `NaN` → `SELECT ... WHERE id = NaN`, which MariaDB reads as a column
+  name ("Unknown column 'NaN' in 'WHERE'") → unhandled rejection → with no global error
+  handler, **the process exits**. The POST routes have had this since Phase 24 and it
+  went unnoticed because nothing POSTs to a hand-typed path; a GET is reachable from a
+  typed URL or a stale bookmark. The guard is one line in `getById` rather than five
+  copies in the route, because `getById` already promises "a row or null" and `NaN` has
+  no row. **This is not specific to documents** — the same `Number(req.params.id)` with
+  no guard is in every admin router, and each is one typed URL away from the same crash.
+  Only the documents path is fixed here; the rest is a phase of its own.
+
+- **No new CSS.** Row-level state is `health-badge` + `health-healthy` /
+  `health-warning` / `health-locked`, all already in `public/css/style.css`. There is no
+  `health-critical`, so "no model available" uses `health-locked` (the red one). The form
+  page reuses `stacked-form instructions-form` — the 640px variant Clarification
+  Instructions already uses — because `stacked-form` alone is capped at 320px and a
+  16-row prompt textarea in a 320px column is the thing this phase is supposed to fix.
+
+- **The missing-Markdown advisory is computed from the textarea, not the row.** On the
+  list it reads the stored prompt; on the form it reads whatever is about to be rendered
+  into the field, so after a rejected submit the advisory describes the text the admin is
+  looking at rather than the version still in the database.
+
+- **The list route stopped resolving what it no longer shows.** It still resolves the
+  effective model per definition (the fallback marker is on the row, and that is
+  deliberate), but it no longer ships `model_prompt`, `starterPrompt`,
+  `MAX_TITLE_LENGTH`, `MIN_PROMPT_LENGTH` or the model list to the view — only a
+  `hasEnabledModel` boolean for the one error that needs it. Ten definitions render in
+  ~740 bytes each.
+
+### Files
+
+Added: `views/admin/document-form.ejs` (one template, create and edit).
+
+Changed: `app/routes/admin/documents.js` (`renderDocuments` split into `renderList` and
+`renderForm`; two new GETs; both POSTs re-render their own form on validation failure),
+`views/admin/documents.ejs` (rewritten as an `admin-table`),
+`app/lib/documents/docDefinitions.js` (the `getById` integer guard).
+
+### Verification
+
+Run over real HTTP against the running stack (`apex-app` on nodemon, real MariaDB). The
+dev database predated Phase 24, so `make migrate` was replayed first to create
+`doc_definitions`; the catalog and definition rows created below were removed afterwards
+and the database left as it was found.
+
+1. **The list.** Empty state, then 2 definitions, then 10. Page grows ~740 bytes per row
+   (3.6 KB → 9.6 KB) and **no prompt text appears in the response at all** — grepped for
+   it, zero hits. An edit page is 4.5 KB.
+2. **Row state.** Active / Not active, the effective model name, a `fallback` badge after
+   the configured model was disabled out from under a definition, a `no Markdown` badge
+   on a prompt that never says the word, `none available` with no catalog default — all
+   correct, and each explained in full on the corresponding edit page.
+3. **The defect this phase fixes.** A rejected update (duplicate title) with a long
+   rewritten prompt re-rendered `/admin/documents/1/update`'s own form with the submitted
+   title, description, 150-character prompt and model selection all intact. Pre-Phase-26
+   this redrew every field from the database row. A rejected create still echoes the same
+   way, including an unchecked Active box.
+4. **Unchanged behavior.** Create → 302 to the list; update → 302; `prompt_revision`
+   bumped only on a prompt change; `doc_key` unmoved across a title edit; toggle both
+   directions; delete archives, drops the row from the list, keeps the key reserved (a
+   re-created "Code Review Notes" got `code_review_notes_2`). `admin_audit_log` payloads
+   byte-compared against the Phase 24 shape for all five actions, including both prompt
+   texts on a prompt change and `orphanedDocuments` on delete.
+5. **Dead and junk ids, on all five routes.** `999/edit` and `abc/edit` both render the
+   list with "That document no longer exists." and no form; an archived id does the same;
+   `abc/update`, `abc/active` and `abc/delete` no longer take the process down.
+
 ## Phase 27 — Repository access state: `enabled`, `read_only`, `disabled`
 
 A repo today has exactly one lifecycle verb: hard `DELETE`

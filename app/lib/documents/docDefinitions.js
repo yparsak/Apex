@@ -101,7 +101,15 @@ async function listActive() {
   return rows;
 }
 
+// A non-integer id is "no such row", not an error. Without this, Number() on a
+// junk path segment yields NaN, which mysql2 interpolates as a bare `NaN` and
+// MariaDB reads as a column name - "Unknown column 'NaN' in 'WHERE'", an
+// unhandled rejection, and with no global error handler the process exits.
+// Phase 26 made that reachable by GET (/admin/documents/abc/edit), i.e. by a
+// typed URL or a stale link, so the guard belongs here rather than repeated at
+// each of the five routes that look a definition up.
 async function getById(id) {
+  if (!Number.isInteger(id)) return null;
   const [[row]] = await db.query('SELECT * FROM doc_definitions WHERE id = ?', [id]);
   return row || null;
 }

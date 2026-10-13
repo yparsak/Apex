@@ -8,6 +8,14 @@
 // documents get written, and by which model, is a different question that keeps
 // growing (per-document cadence, per-document scope, eventually per-repo
 // overrides).
+//
+// Phase 26 split the one page in two: a list that answers "what exists and
+// which are on", and a form page per document. This is the only router in
+// /admin with more than one GET, and that is the point - `model_prompt` is the
+// first admin-editable field too big for a table cell, so it is the one field
+// that had to move off the list. Nothing about the data model, the validation
+// or the audit rows changed with it; the only behavior change is that a
+// rejected update now keeps what was typed (see below).
 const express = require('express');
 const modelCatalog = require('../../lib/model/modelCatalog');
 const docDefinitions = require('../../lib/documents/docDefinitions');
@@ -15,7 +23,17 @@ const { logAdminAction } = require('../../lib/adminAudit');
 
 const router = express.Router();
 
-async function renderDocuments(req, res, error, form) {
+// Advisory only. There is no reliable check for "this prompt will produce
+// Markdown", and the real defense is the prefilled starter text on the create
+// form - but a prompt that never says the word at all is worth one line of
+// doubt, because the failure mode (a document that renders as a wall of prose
+// or, worse, as a chat reply) is silent until someone opens the repo's
+// Documents page. Flagged on the list row, explained on the form.
+function missingMarkdownHint(prompt) {
+  return !/markdown/i.test(prompt || '');
+}
+
+async function renderList(req, res, error) {
   const [models, definitions] = await Promise.all([modelCatalog.listAll(), docDefinitions.listAll()]);
 
   // Resolved per definition rather than once, because each has its own model
@@ -25,35 +43,97 @@ async function renderDocuments(req, res, error, form) {
   for (const d of definitions) {
     const { model, usedFallback } = await modelCatalog.resolveForDocDefinition(d);
     rows.push({
-      ...d,
+      id: d.id,
+      docKey: d.doc_key,
+      title: d.title,
+      isActive: !!d.is_active,
       // What is configured vs. what is actually in effect - they differ when
       // the configured model has since been disabled or deleted, and the
       // screen has to say so rather than showing the fallback as if it were
-      // the choice.
+      // the choice. A document quietly generating under a model nobody picked
+      // is exactly what an admin needs to spot while scanning the list, so the
+      // marker is on the row; the paragraph explaining it is on the form.
       effectiveModel: model,
       usedFallback,
       documentCount: await docDefinitions.countDocuments(d.doc_key),
-      // Advisory only. There is no reliable check for "this prompt will
-      // produce Markdown", and the real defense is the prefilled starter text
-      // on the create form - but a prompt that never says the word at all is
-      // worth one line of doubt, because the failure mode (a document that
-      // renders as a wall of prose or, worse, as a chat reply) is silent until
-      // someone opens the repo's Documents page.
-      missingMarkdownHint: !/markdown/i.test(d.model_prompt || ''),
+      missingMarkdownHint: missingMarkdownHint(d.model_prompt),
     });
   }
 
   res.render('admin/documents', {
     user: req.session.user,
     definitions: rows,
-    models,
+    // Only to decide whether to show the "nothing can be generated" error. The
+    // list renders no model picker - that is on the form.
+    hasEnabledModel: models.some((m) => m.enabled),
+    error,
+  });
+}
+
+// The create and edit pages are one view with one shape: a definition or null,
+// and the values to put in the fields. Keeping them a single template is what
+// stops the two forms drifting apart - the prose beside each field is the only
+// place the system explains its own contract to whoever is writing a prompt,
+// and it has to say the same thing in both places.
+async function renderForm(req, res, { definition, error, body }) {
+  const models = await modelCatalog.listAll();
+
+  // Submitted values win over stored ones so a rejected submit echoes back
+  // what was typed instead of silently reverting to the database row. On the
+  // create form with nothing submitted the prompt opens prefilled, not blank
+  // (see docDefinitions.STARTER_PROMPT).
+  let form;
+  if (body) {
+    form = {
+      title: body.title || '',
+      description: body.description || '',
+      model_prompt: body.model_prompt || '',
+      model_id: body.model_id || '',
+      is_active: body.is_active === '1',
+    };
+  } else if (definition) {
+    form = {
+      title: definition.title,
+      description: definition.description || '',
+      model_prompt: definition.model_prompt,
+      model_id: definition.model_id || '',
+      is_active: !!definition.is_active,
+    };
+  } else {
+    // Checked by default: someone about to write a prompt wants it to run.
+    form = { title: '', description: '', model_prompt: docDefinitions.STARTER_PROMPT, model_id: '', is_active: true };
+  }
+
+  let effectiveModel = null;
+  let usedFallback = false;
+  let documentCount = 0;
+  if (definition) {
+    ({ model: effectiveModel, usedFallback } = await modelCatalog.resolveForDocDefinition(definition));
+    // Feeds the delete confirmation: "this hides a document 30 repos have" is
+    // a materially different decision from deleting one nothing ever ran.
+    documentCount = await docDefinitions.countDocuments(definition.doc_key);
+  }
+
+  res.render('admin/document-form', {
+    user: req.session.user,
+    definition: definition || null,
+    form,
+    // The picker offers enabled models only. A definition pointing at a
+    // disabled model therefore shows no selection - which is honest, because
+    // that is a choice that is no longer in effect, and the fallback notice
+    // above the field says so.
+    enabledModels: models.filter((m) => m.enabled),
+    effectiveModel,
+    usedFallback,
+    documentCount,
+    // Computed from what is actually in the textarea, not from the stored row:
+    // after a rejected submit the advisory has to describe the text the admin
+    // is looking at.
+    missingMarkdownHint: missingMarkdownHint(form.model_prompt),
     starterPrompt: docDefinitions.STARTER_PROMPT,
     maxTitleLength: docDefinitions.MAX_TITLE_LENGTH,
     minPromptLength: docDefinitions.MIN_PROMPT_LENGTH,
     error,
-    // Echoed back into the create form after a rejected submit, so a long
-    // prompt someone just typed is not thrown away by a validation error.
-    form: form || null,
   });
 }
 
@@ -99,12 +179,25 @@ async function parseForm(body, exceptId = null) {
 }
 
 router.get('/', async (req, res) => {
-  await renderDocuments(req, res, null);
+  await renderList(req, res, null);
+});
+
+router.get('/new', async (req, res) => {
+  await renderForm(req, res, { definition: null });
+});
+
+// An id that no longer resolves lands on the list with the explanation rather
+// than on a form with nothing in it - there is nothing to edit and no reason
+// to offer the fields.
+router.get('/:id/edit', async (req, res) => {
+  const definition = await docDefinitions.getById(Number(req.params.id));
+  if (!definition || definition.archived_at) return renderList(req, res, 'That document no longer exists.');
+  await renderForm(req, res, { definition });
 });
 
 router.post('/', async (req, res) => {
   const { error, values } = await parseForm(req.body);
-  if (error) return renderDocuments(req, res, error, req.body);
+  if (error) return renderForm(req, res, { definition: null, error, body: req.body });
 
   // The form's Active box is checked by default: an admin who just wrote a
   // prompt wants it to run. Phase 23's "new types are opt-in" default existed
@@ -133,10 +226,13 @@ router.post('/', async (req, res) => {
 router.post('/:id/update', async (req, res) => {
   const id = Number(req.params.id);
   const existing = await docDefinitions.getById(id);
-  if (!existing || existing.archived_at) return renderDocuments(req, res, 'That document no longer exists.');
+  if (!existing || existing.archived_at) return renderList(req, res, 'That document no longer exists.');
 
   const { error, values } = await parseForm(req.body, id);
-  if (error) return renderDocuments(req, res, error);
+  // Re-renders the edit form with what was submitted. Before Phase 26 this
+  // passed no body, so a rejected update redrew every field from the database
+  // row and a long prompt someone had just rewritten was gone.
+  if (error) return renderForm(req, res, { definition: existing, error, body: req.body });
 
   // doc_key is not in the form at all. The title is editable and the key is
   // not: it is already copied into doc_jobs, repo_doc_sync and repo_documents
@@ -165,7 +261,7 @@ router.post('/:id/update', async (req, res) => {
 router.post('/:id/active', async (req, res) => {
   const id = Number(req.params.id);
   const definition = await docDefinitions.getById(id);
-  if (!definition || definition.archived_at) return renderDocuments(req, res, 'That document no longer exists.');
+  if (!definition || definition.archived_at) return renderList(req, res, 'That document no longer exists.');
 
   const active = req.body.active === 'true';
   await docDefinitions.setActive(id, active);
@@ -179,7 +275,9 @@ router.post('/:id/active', async (req, res) => {
 
 // Delete archives (see docDefinitions.archive). Nothing already generated is
 // removed, and the key stays reserved so a later document cannot inherit this
-// one's content.
+// one's content. The button lives on the edit page, not in every list row: it
+// is irreversible from the UI, and a danger button sitting beside a button
+// people press often is a misclick waiting to happen.
 router.post('/:id/delete', async (req, res) => {
   const id = Number(req.params.id);
   const definition = await docDefinitions.getById(id);

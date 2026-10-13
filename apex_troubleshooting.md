@@ -351,7 +351,9 @@ run failed" below.)
    queued it and the drain, which points back at step 2.
 6. If the log says the configured model was missing or disabled and the catalog default
    was used instead, the document *was* generated — just not by the model the admin
-   picked. Re-pick it on `/admin/documents`.
+   picked. The `/admin/documents` list marks that row's Model column `fallback`, so this
+   is also visible without reading the log; re-pick the model on that document's own
+   page (its title on the list links there).
 
 ## "Run a document against this branch" isn't on the branch page
 

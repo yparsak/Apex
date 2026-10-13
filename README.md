@@ -71,6 +71,13 @@ regenerated from scratch rather than patched.
 Plus an **Active** flag: turning a document off stops it being regenerated without
 deleting what has already been written.
 
+`/admin/documents` itself is a list — one row per document, showing its key, whether it
+is on, which model actually writes it (flagged when that is a fallback rather than the
+configured choice) and how many repos have a copy. The prompt is not on the list: titles
+link to a page per document where the four fields and everything the system has to say
+about them live together, and **New document** opens the same form with the prompt
+prefilled.
+
 Two things worth knowing up front:
 
 - **Apex ships with no documents defined.** A fresh install generates nothing until an
@@ -181,7 +188,8 @@ make clean      # full reset - also removes the data volume and network
 - `docWorker.js` — generated-document regeneration and repo-file-map retirement, run
   nightly via cron. Which documents it writes comes entirely from the `doc_definitions`
   table (`app/lib/documents/docDefinitions.js`), which an admin fills in on
-  `/admin/documents` (`app/routes/admin/documents.js`, `views/admin/documents.ejs`).
+  `/admin/documents` (`app/routes/admin/documents.js`, with `views/admin/documents.ejs`
+  as the list and `views/admin/document-form.ejs` as the create/edit form).
   **Apex ships with no document definitions**, so a fresh install generates nothing
   until someone creates one — see "Recreating the Spec / Communication Protocol
   document" below. Adding a document type is a form submission, not a deploy.
@@ -197,7 +205,7 @@ make clean      # full reset - also removes the data volume and network
 
 Until Phase 24 Apex shipped with exactly one built-in document type, written into the
 code. It is now a row like any other, and it is not seeded — a fresh install generates
-nothing. To get it back, go to `/admin/documents`, open the **New document** form, and
+nothing. To get it back, go to `/admin/documents`, follow **New document**, and
 use the three values below. The form already opens with the Model Prompt pre-filled with
 this exact text, so in practice this is: paste the title, paste the description, pick a
 model, submit.
@@ -212,8 +220,7 @@ byte-for-byte the same two messages it received before.
 Spec / Communication Protocol
 ```
 
-**Description** (shown to people on `/admin/documents` and on each repo's Documents
-page; never sent to the model)
+**Description** (shown to people on each repo's Documents page; never sent to the model)
 
 ```
 What the repo does, how it is structured, how to build and run it, and the surface
