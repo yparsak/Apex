@@ -6,6 +6,13 @@
     <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
     <h1><%= branch.branch_name %></h1>
     <p>CO <%= branch.co_number %></p>
+    <%# Phase 27. Everything below that *starts* something is hidden under
+        read_only/disabled: the clarification form, Approve & Implement, the
+        overlap resolution buttons and the failure-recovery actions. The
+        conversation, requirements, stepper and logs all stay - the page is
+        still the record of what happened here, which is the point of never
+        hiding a repo. %>
+    <%- include('partials/repo-state-banner', { repo: repo }) %>
 
     <ol class="stepper">
       <% topStepper.forEach(function(s) { %>
@@ -43,14 +50,16 @@
         <% if (overlapRequirement) { %>
           <p class="placeholder">Matches: "<%= overlapRequirement.requirement_text %>"</p>
         <% } %>
-        <div class="overlap-actions">
-          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/confirm" class="inline-form">
-            <button type="submit">Confirm &amp; proceed anyway</button>
-          </form>
-          <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/skip" class="inline-form">
-            <button type="submit" class="danger-button">Skip — already done</button>
-          </form>
-        </div>
+        <% if (repo.access_state === 'enabled') { %>
+          <div class="overlap-actions">
+            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/confirm" class="inline-form">
+              <button type="submit">Confirm &amp; proceed anyway</button>
+            </form>
+            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/skip" class="inline-form">
+              <button type="submit" class="danger-button">Skip — already done</button>
+            </form>
+          </div>
+        <% } %>
       </div>
     <% } %>
 
@@ -67,7 +76,10 @@
       <% }) %>
     </div>
 
-    <% if (session.status === 'awaiting_approval' || session.status === 'queued') { %>
+    <%# Under read_only/disabled there is no form and no second explanation
+        either - the banner at the top of the page is the explanation, and the
+        note with it is the admin's. %>
+    <% if (repo.access_state === 'enabled' && (session.status === 'awaiting_approval' || session.status === 'queued')) { %>
       <% if (!pendingRequirement) { %>
         <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
           <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
@@ -80,7 +92,7 @@
       <% } %>
     <% } %>
 
-    <% if (eligibleForApproval) { %>
+    <% if (eligibleForApproval && repo.access_state === 'enabled') { %>
       <h2>Approve &amp; Implement</h2>
       <p class="placeholder">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
       <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/approve">
@@ -140,7 +152,8 @@
       <% } %>
 
       <% if (session.status === 'failed') { %>
-        <p class="error">This pipeline run failed<% if (latestRun && latestRun.stage) { %> at the <%= latestRun.stage %> step<% } %>. Resume/retry the same requirements below, or clear them and start over.</p>
+        <p class="error">This pipeline run failed<% if (latestRun && latestRun.stage) { %> at the <%= latestRun.stage %> step<% } %>.<% if (repo.access_state === 'enabled') { %> Resume/retry the same requirements below, or clear them and start over.<% } %></p>
+        <% if (repo.access_state === 'enabled') { %>
         <div class="overlap-actions">
           <% if (eligibleForResume) { %>
             <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/resume" class="inline-form">
@@ -154,6 +167,7 @@
             <button type="submit" class="danger-button">Clear &amp; start new session</button>
           </form>
         </div>
+        <% } %>
       <% } %>
     <% } %>
   </main>

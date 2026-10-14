@@ -7,15 +7,22 @@
     <h1><%= repo.name %></h1>
     <p><a href="/repos/<%= repo.id %>/documents">Documents</a></p>
     <% if (repo.description) { %><p><%= repo.description %></p><% } %>
+    <%- include('partials/repo-state-banner', { repo: repo }) %>
     <% if (error) { %><p class="error"><%= error %></p><% } %>
-    <h2>Start new branch</h2>
-    <form method="POST" action="/repos/<%= repo.id %>/co" class="stacked-form">
-      <label>CO number
-        <input type="text" name="co_number" placeholder="C12345678" pattern="[Cc][0-9]{8}" required>
-      </label>
-      <button type="submit">Find branches for this CO</button>
-    </form>
-    <p class="placeholder">Apex shows what already exists on GitHub for that CO before creating anything.</p>
+    <%# Under read_only/disabled the CO-entry form is ABSENT from the markup
+        rather than rendered-and-disabled (see ROADMAP.md Phase 27). The banner
+        above has already said why, so a greyed form would only re-ask a question
+        that has been answered. The POST still refuses independently. %>
+    <% if (repo.access_state === 'enabled') { %>
+      <h2>Start new branch</h2>
+      <form method="POST" action="/repos/<%= repo.id %>/co" class="stacked-form">
+        <label>CO number
+          <input type="text" name="co_number" placeholder="C12345678" pattern="[Cc][0-9]{8}" required>
+        </label>
+        <button type="submit">Find branches for this CO</button>
+      </form>
+      <p class="placeholder">Apex shows what already exists on GitHub for that CO before creating anything.</p>
+    <% } %>
 
     <h2>Branches</h2>
     <nav class="tabs">
@@ -27,6 +34,9 @@
       <% if (!branches.length) { %>
         <p class="placeholder">No active branches yet.</p>
       <% } else { %>
+        <%# Every branch stays listed in all three states - the list is a read.
+            Only the action column goes away, which is the same rule the CO form
+            above follows (see ROADMAP.md Phase 27). %>
         <table class="admin-table">
           <thead><tr><th>Branch</th><th>CO</th><th>Created</th><th></th></tr></thead>
           <tbody>
@@ -36,15 +46,17 @@
               <td><%= b.co_number %></td>
               <td><%= b.created_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
               <td class="row-form">
-                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/continue" class="inline-form">
-                  <button type="submit" class="link-button">Continue</button>
-                </form>
-                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/deactivate" class="inline-form">
-                  <button type="submit" class="link-button">Deactivate</button>
-                </form>
-                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
-                  <button type="submit" class="danger-button">Delete</button>
-                </form>
+                <% if (repo.access_state === 'enabled') { %>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/continue" class="inline-form">
+                    <button type="submit" class="link-button">Continue</button>
+                  </form>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/deactivate" class="inline-form">
+                    <button type="submit" class="link-button">Deactivate</button>
+                  </form>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
+                    <button type="submit" class="danger-button">Delete</button>
+                  </form>
+                <% } %>
               </td>
             </tr>
             <% }) %>
@@ -64,12 +76,14 @@
               <td><%= b.co_number %></td>
               <td><%= b.updated_at.toISOString().slice(0, 16).replace('T', ' ') %></td>
               <td class="row-form">
-                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/reactivate" class="inline-form">
-                  <button type="submit" class="link-button">Reactivate</button>
-                </form>
-                <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
-                  <button type="submit" class="danger-button">Delete</button>
-                </form>
+                <% if (repo.access_state === 'enabled') { %>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/reactivate" class="inline-form">
+                    <button type="submit" class="link-button">Reactivate</button>
+                  </form>
+                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= b.id %>/delete" class="inline-form">
+                    <button type="submit" class="danger-button">Delete</button>
+                  </form>
+                <% } %>
               </td>
             </tr>
             <% }) %>

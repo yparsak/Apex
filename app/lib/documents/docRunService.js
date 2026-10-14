@@ -59,6 +59,12 @@ async function isEnabledForRepo(repoId) {
 // use invites a support ticket the admin has already answered by turning it off.
 async function listRunnableDocuments(repo) {
   if (!repo.on_demand_docs_enabled) return [];
+  // Phase 27: a disabled repo generates nothing, on demand or overnight, so the
+  // panel is absent for the same reason as above. read_only is deliberately NOT
+  // here - keeping documents current is exactly what separates the two rungs,
+  // and the branch page of a read_only repo still offers the run. The refusal
+  // itself is the route's need: 'docs' gate, not this.
+  if (repo.access_state === 'disabled') return [];
   return docDefinitions.listActive();
 }
 

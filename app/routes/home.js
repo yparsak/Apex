@@ -31,8 +31,13 @@ router.get('/', requireAuth, async (req, res) => {
 
   let repos = [];
   if (selectedGroup) {
+    // No access_state predicate, deliberately: no state hides a repo (see
+    // ROADMAP.md Phase 27), so this query - which bypasses repoAccess.js
+    // entirely - needs no new filter, only the column to mark the card with.
+    // Nothing has to be filtered, so nothing can be forgotten.
     const [rows] = await db.query(
-      'SELECT id, name, description, default_branch_name FROM repos WHERE repo_group_id = ? ORDER BY name',
+      `SELECT id, name, description, default_branch_name, access_state, access_state_note
+       FROM repos WHERE repo_group_id = ? ORDER BY name`,
       [selectedGroup.id]
     );
     repos = await Promise.all(rows.map((r) => enrichRepo({ name: selectedGroup.org_name }, r)));

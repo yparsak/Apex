@@ -145,7 +145,15 @@ async function generateForJob(job, definition) {
 // drainQueuedJobs() - processes every currently-queued job, one at a time,
 // each in its own try/catch so one repo's failure doesn't stop the rest.
 async function drainQueuedJobs() {
-  const [jobs] = await db.query("SELECT * FROM doc_jobs WHERE status = 'queued' ORDER BY id ASC");
+  // access_state joined in so the scan's predicate holds at drain time too (see
+  // ROADMAP.md Phase 27): the scan and the drain are separate runs, and a repo
+  // can be disabled in between. Dropping the job here is what makes "a disabled
+  // repo generates nothing" true of work that was already banked.
+  const [jobs] = await db.query(
+    `SELECT j.*, r.access_state FROM doc_jobs j
+     JOIN repos r ON r.id = j.repo_id
+     WHERE j.status = 'queued' ORDER BY j.id ASC`
+  );
   if (!jobs.length) return;
 
   // Read once for the whole drain rather than per job: definitions cannot
@@ -155,6 +163,20 @@ async function drainQueuedJobs() {
   const activeByKey = new Map((await docDefinitions.listActive()).map((d) => [d.doc_key, d]));
 
   for (const job of jobs) {
+    // Terminal 'skipped' rather than left 'queued', for the same reason as the
+    // deactivated-definition case below: a job left queued would run whenever the
+    // repo is re-enabled, generating against a trunk sha that may be months
+    // stale, and the first scan after re-enabling re-finds the repo anyway with
+    // the current sha. Nothing is lost by dropping it.
+    if (job.access_state === 'disabled') {
+      await db.query("UPDATE doc_jobs SET status = 'skipped' WHERE id = ?", [job.id]);
+      processLogger().info(
+        { jobId: job.id, repoId: job.repo_id, docType: job.doc_type },
+        'doc job skipped - repo is disabled'
+      );
+      continue;
+    }
+
     const definition = activeByKey.get(job.doc_type);
 
     // A definition deactivated, archived, or never existing between the scan

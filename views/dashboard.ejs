@@ -38,7 +38,18 @@
         <div class="repo-list">
           <% repos.forEach(function(repo) { %>
             <a class="repo-card" href="/repos/<%= repo.id %>">
-              <div class="repo-card-name"><%= repo.name %></div>
+              <%# Every repo is listed in every access state - the card is a link
+                  to a page that still renders (see ROADMAP.md Phase 27). The
+                  marker is so a frozen repo is recognizable before it is opened,
+                  not so it can be avoided. %>
+              <div class="repo-card-name">
+                <%= repo.name %>
+                <% if (repo.access_state === 'read_only') { %>
+                  <span class="health-badge health-warning">Read-only</span>
+                <% } else if (repo.access_state === 'disabled') { %>
+                  <span class="health-badge health-warning">Disabled</span>
+                <% } %>
+              </div>
               <div class="repo-card-desc"><%= repo.description || '' %></div>
               <div class="repo-card-meta">
                 <span><%= repo.collaboratorLogins.length ? repo.collaboratorLogins.join(', ') : '—' %></span>

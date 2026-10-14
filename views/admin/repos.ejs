@@ -17,8 +17,20 @@
       regenerating from the repo's default branch whether this is on or off. Turn it off for a repo
       whose branch diffs are too large to review usefully, or whose model spend needs containing.
     </p>
+    <%# The state ladder, stated once here rather than per row. Each step down
+        removes exactly one capability, which is what makes the control
+        explainable without a table in front of you (see ROADMAP.md Phase 27). %>
+    <p class="placeholder">
+      <strong>State</strong> is a repo's lifecycle, and no state ever hides it: anyone with access to
+      the group keeps seeing and reading every repo in it. <strong>Enabled</strong> is everything.
+      <strong>Read-only</strong> keeps the repo readable and its documents current &mdash; nightly and
+      on demand &mdash; but starts no new branch or pipeline work. <strong>Disabled</strong> keeps
+      everything readable and generates nothing: documents stay frozen at the commit they were last
+      written from, and the repo costs no GitHub calls and no model spend overnight. The note is shown
+      to engineers on the repo's own pages and is the answer to "why can't I create a branch here".
+    </p>
     <table class="admin-table">
-      <thead><tr><th>Repo Group</th><th>Name</th><th>Description</th><th>Default Branch</th><th></th></tr></thead>
+      <thead><tr><th>Repo Group</th><th>Name</th><th>Description</th><th>Default Branch</th><th>State</th><th></th></tr></thead>
       <tbody>
         <% repos.forEach(function(repo) { %>
         <tr>
@@ -38,6 +50,34 @@
               </label>
               <button type="submit">Save</button>
             </form>
+          </td>
+          <td>
+            <%# Separate form from the row save above, matching its own route:
+                freezing a repo and renaming one are different operations and
+                should not have to happen together.
+
+                The confirm is only armed when there is queued work to lose sight
+                of. A queued session on a non-enabled repo stays queued and is
+                skipped rather than failed, so it runs again the moment the repo
+                is enabled - the hazard is that it sits invisibly in the
+                meantime, which is why the count is on the row as well. %>
+            <form method="POST" action="/admin/repos/<%= repo.id %>/access-state" class="row-form"
+              <% if (repo.queued_sessions) { %>onsubmit="return this.access_state.value === 'enabled' || confirm('<%= repo.queued_sessions %> queued run(s) on this repo will not start while it is not enabled. They stay queued and run once it is enabled again. Continue?')"<% } %>>
+              <select name="access_state">
+                <% accessStates.forEach(function(s) { %>
+                <option value="<%= s.value %>" <%= s.value === repo.access_state ? 'selected' : '' %>><%= s.label %></option>
+                <% }) %>
+              </select>
+              <input type="text" name="access_state_note" value="<%= repo.access_state_note || '' %>"
+                placeholder="Why (shown to engineers)" maxlength="500">
+              <button type="submit">Set state</button>
+            </form>
+            <% if (repo.access_state !== 'enabled' && repo.queued_sessions) { %>
+              <p class="placeholder">
+                <span class="health-badge health-warning"><%= repo.queued_sessions %> queued</span>
+                not starting while this repo is <%= repo.access_state === 'read_only' ? 'read-only' : 'disabled' %>
+              </p>
+            <% } %>
           </td>
           <td>
             <form method="POST" action="/admin/repos/<%= repo.id %>/delete" class="row-form">

@@ -8,8 +8,13 @@ const db = require('../db');
 const { parseSections } = require('./requirementsLogFormat');
 
 async function searchByCoNumber(coNumber, userId) {
+  // access_state comes along so a hit from a dormant repo can be marked (see
+  // ROADMAP.md Phase 27). Nothing is filtered by it: reading is never removed
+  // by any state, and this search is a read - a result list that quietly dropped
+  // disabled repos would be a second, invisible way to hide one.
   const [repos] = await db.query(
-    `SELECT r.id, r.name, rg.name AS repo_group_name, o.name AS org_name
+    `SELECT r.id, r.name, r.access_state, r.access_state_note,
+            rg.name AS repo_group_name, o.name AS org_name
      FROM repos r
      JOIN repo_groups rg ON rg.id = r.repo_group_id
      JOIN orgs o ON o.id = rg.org_id

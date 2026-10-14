@@ -318,6 +318,43 @@ body {
   margin-bottom: 1.5rem;
 }
 
+/* Repository access state (see ROADMAP.md Phase 27). Same shape as the overlap
+   banner above - both say "something about this page is not what you expect" -
+   but a distinct class because the two colour differently: read_only is amber
+   (work is paused), disabled is red (documents are frozen and will not catch
+   up on their own). */
+.state-banner {
+  max-width: 700px;
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.state-banner p {
+  margin: 0;
+}
+
+.state-banner p + p {
+  margin-top: 0.5rem;
+}
+
+.state-read_only {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+}
+
+.state-disabled {
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+}
+
+/* The admin's own sentence about why, quoted rather than paraphrased - it will
+   name a person or a date the surrounding copy cannot. */
+.state-note {
+  color: #4b5563;
+  font-style: italic;
+}
+
 .overlap-actions {
   display: flex;
   gap: 0.5rem;

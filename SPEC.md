@@ -80,9 +80,18 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 - `orgs` → `repo_groups` → `repos` — a repo's `org.name` doubles as its literal GitHub
   owner login (`owner/repo` = `${org.name}/${repo.name}`); there's no separate "GitHub
   org" field.
-- `user_repo_group_permissions` — the entire authorization model: access is granted per
+- `user_repo_group_permissions` — **who** may reach a repo: access is granted per
   `(user, repo_group)`, not per-repo and not per-action. Any permitted user can create
   branches, run pipelines, and manage branch lifecycle for every repo in that group.
+- `repos.access_state` (+ `access_state_note`) — **what may be done** to a repo, as a
+  three-rung ladder: `enabled` (everything), `read_only` (readable, documents keep
+  regenerating, no new branch or pipeline work), `disabled` (readable only, documents
+  frozen at the commit they were last generated from). Defaults to `enabled`, which is
+  what every pre-Phase-27 row backfills to. **No state hides a repo** — reading is never
+  removed, so nothing in the codebase filters repos by this column; it only refuses
+  actions on them. The note is free text and is quoted to the engineer in every refusal
+  and banner. The two gates compose and neither subsumes the other: permissions are
+  per-user and this is per-repo, so **admins get no bypass** on engineer-facing surfaces.
 
 **Change orders & branches**
 - `change_orders` — one row per `(repo, co_number)`, created on first use.
@@ -212,7 +221,9 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 ## Lifecycle of a Change Order
 
 1. **Repo/branch selection.** An engineer with `user_repo_group_permissions` on a
-   repo's group picks a repo, enters a CO number (validated against `^C[0-9]{8}$` —
+   repo's group picks a repo **that is in the `enabled` access state** (the other two
+   states render the same pages, with the CO entry form and every branch action absent
+   and a banner saying why), enters a CO number (validated against `^C[0-9]{8}$` —
    shape only; Apex has no connection to the actual change-control system), and lands
    on a CO page listing **every branch on GitHub matching
    `dev/{initials}-{CO}-{n}` for that CO** ([branchService.js](app/lib/branchService.js)
@@ -343,11 +354,18 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   untrusted sandbox (the clone step) — the write-capable token stays on the host.
 - **Auth** is local username/password (bcrypt) behind the `authProvider` seam.
   Sessions are server-side (MariaDB-backed), 8-hour cookie lifetime.
-- **Authorization** is coarse and explicit: `user_repo_group_permissions` is the only
-  gate, checked on every repo-scoped route via
-  [repoAccess.js](app/lib/repoAccess.js). There is no per-action or per-branch
-  ownership restriction except where called out above (retry/resume are scoped to a
-  session's own `(branch_id, user_id)`; branch lifecycle actions are not).
+- **Authorization** is coarse and explicit, and is **two gates**, both checked on every
+  repo-scoped route via [repoAccess.js](app/lib/repoAccess.js):
+  `user_repo_group_permissions` answers who may reach the repo, and `repos.access_state`
+  answers what may be done to it. `getAccessibleRepo(repoId, userId, need)` takes a
+  **required** `need` of `'read'`, `'docs'` or `'write'` and throws on a missing or
+  unrecognized value — no default is safe, since one breaks every GET and the other lets
+  a write through silently. There is no per-action or per-branch ownership restriction
+  beyond that except where called out above (retry/resume are scoped to a session's own
+  `(branch_id, user_id)`; branch lifecycle actions are not). The two background processes
+  reach repos without passing through this function at all, so each enforces
+  `access_state` in its own claim query — `worker.js` takes only `enabled` sessions and
+  the document scan and drain skip `disabled` repos.
 - **Sandbox isolation**: no network during build/test, no bind-mounted host paths for
   sandboxed code, and the sandbox never sees the write-capable push token. A failing
   build/test command cannot exfiltrate anything beyond the container itself.

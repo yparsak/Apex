@@ -1,7 +1,7 @@
 const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
 const db = require('../lib/db');
-const { getAccessibleRepo } = require('../lib/repoAccess');
+const { getAccessibleRepo, accessStateMessage } = require('../lib/repoAccess');
 const branchService = require('../lib/branchService');
 const sessionService = require('../lib/sessionService');
 const lockService = require('../lib/lockService');
@@ -16,14 +16,26 @@ const docRunService = require('../lib/documents/docRunService');
 const router = express.Router();
 router.use(requireAuth);
 
-async function loadAccess(req, res) {
-  const access = await getAccessibleRepo(req.params.repoId, req.session.user.id);
+// `need` is 'read', 'docs' or 'write' (see ROADMAP.md Phase 27) and is stated
+// at every call site below rather than defaulted - getAccessibleRepo throws if
+// it is missing, because neither possible default is safe.
+//
+// The 403 here and the views' hiding of the same controls are both required and
+// neither is redundant: the hidden control is what stops an engineer wasting a
+// click, and this is what stops a stale tab, a bookmarked POST target or a
+// back-button resubmit getting through anyway.
+async function loadAccess(req, res, need) {
+  const access = await getAccessibleRepo(req.params.repoId, req.session.user.id, need);
   if (!access) {
     res.status(404).send('Repo not found.');
     return null;
   }
   if (access.forbidden) {
     res.status(403).send('Forbidden: no access to this repo group.');
+    return null;
+  }
+  if (access.denied) {
+    res.status(403).send(accessStateMessage(access.denied, access.note));
     return null;
   }
   return access;
@@ -91,7 +103,7 @@ async function loadBranch(req, res, access) {
 }
 
 router.get('/:repoId', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'read');
   if (!access) return;
   await renderRepoPage(req, res, access, null);
 });
@@ -99,21 +111,27 @@ router.get('/:repoId', async (req, res) => {
 // Per-repo Documents view (see ROADMAP.md Phase 8) - the global, CO-scoped
 // cross-repo search lives at GET /documents instead (app/routes/documents.js).
 router.get('/:repoId/documents', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'read');
   if (!access) return;
 
   // One read for every repo-level document, then split by type, rather than a
   // query per type: the definitions decide how many there are (see ROADMAP.md
   // Phase 23/24), and a per-type query would mean one more round trip each
   // time an admin creates a document.
-  const [branches, docResult, definitions] = await Promise.all([
+  const [branches, docResult, syncResult, definitions] = await Promise.all([
     branchService.listActiveBranches(access.repo, access.org),
     db.query("SELECT doc_type, content, updated_at FROM repo_documents WHERE repo_id = ? AND co_number = ''", [
       access.repo.id,
     ]),
+    // Phase 27's frozen marker needs no new column: repo_doc_sync already
+    // records the commit each document was generated from. Read unconditionally
+    // rather than only for a disabled repo - one indexed read by repo_id, and a
+    // branch here would be a second place the state has to be interpreted.
+    db.query('SELECT doc_type, synced_commit_sha FROM repo_doc_sync WHERE repo_id = ?', [access.repo.id]),
     docDefinitions.listAll(),
   ]);
   const byType = Object.fromEntries(docResult[0].map((d) => [d.doc_type, d]));
+  const syncedByType = Object.fromEntries(syncResult[0].map((r) => [r.doc_type, r]));
 
   // Built from the definitions, not from the rows that happen to exist, so a
   // document that has never been generated still gets its "not generated yet"
@@ -130,6 +148,10 @@ router.get('/:repoId/documents', async (req, res) => {
     description: d.description,
     active: !!d.is_active,
     doc: byType[d.doc_key] || null,
+    // Short sha for the frozen marker (see ROADMAP.md Phase 27). Null when the
+    // document has never been generated, in which case there is nothing frozen
+    // to mark and the "not generated yet" block below says so instead.
+    syncedSha: syncedByType[d.doc_key] ? syncedByType[d.doc_key].synced_commit_sha.slice(0, 7) : null,
   }));
 
   res.render('repo-documents', {
@@ -152,7 +174,7 @@ router.get('/:repoId/documents', async (req, res) => {
 // Plain POST-redirect-GET so the discovery page is reloadable/bookmarkable
 // and the CO lives in the URL.
 router.post('/:repoId/co', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const coNumber = (req.body.co_number || '').trim().toUpperCase();
@@ -221,7 +243,7 @@ function coNumberParam(req, res) {
 }
 
 router.get('/:repoId/co/:coNumber', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'read');
   if (!access) return;
   const coNumber = coNumberParam(req, res);
   if (!coNumber) return;
@@ -233,7 +255,7 @@ router.get('/:repoId/co/:coNumber', async (req, res) => {
 // re-discovers and re-checks adoptability rather than trusting the submitted
 // name - the page the user clicked on is a snapshot.
 router.post('/:repoId/co/:coNumber/adopt', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
   const coNumber = coNumberParam(req, res);
   if (!coNumber) return;
@@ -254,7 +276,7 @@ router.post('/:repoId/co/:coNumber/adopt', async (req, res) => {
 // Apex's own rows and the refs just discovered on GitHub - so a hand-made -1
 // means this one is -2, never a second -1 that fails at createBranchRef.
 router.post('/:repoId/co/:coNumber/create', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
   const coNumber = coNumberParam(req, res);
   if (!coNumber) return;
@@ -277,7 +299,7 @@ router.post('/:repoId/co/:coNumber/create', async (req, res) => {
 });
 
 router.post('/:repoId/branches/:branchId/continue', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const [[branch]] = await db.query("SELECT * FROM branches WHERE id = ? AND repo_id = ? AND status = 'active'", [
@@ -297,7 +319,7 @@ router.post('/:repoId/branches/:branchId/continue', async (req, res) => {
 // the pipeline lock, so a branch can't be pulled out from under an in-flight
 // pipeline run - see lockService.isLockedForBranch.
 router.post('/:repoId/branches/:branchId/deactivate', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
   const branch = await loadBranch(req, res, access);
   if (!branch) return;
@@ -314,7 +336,7 @@ router.post('/:repoId/branches/:branchId/deactivate', async (req, res) => {
 });
 
 router.post('/:repoId/branches/:branchId/reactivate', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
   const branch = await loadBranch(req, res, access);
   if (!branch) return;
@@ -336,7 +358,7 @@ router.post('/:repoId/branches/:branchId/reactivate', async (req, res) => {
 });
 
 router.post('/:repoId/branches/:branchId/delete', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
   const branch = await loadBranch(req, res, access);
   if (!branch) return;
@@ -426,7 +448,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
 }
 
 router.get('/:repoId/branches/:branchId', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'read');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -451,7 +473,7 @@ router.get('/:repoId/branches/:branchId', async (req, res) => {
 // takes a minute. If deployment timeouts prove this wrong, the fix is a
 // progress-polled run, not a bigger timeout.
 router.post('/:repoId/branches/:branchId/document-run', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'docs');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -506,7 +528,7 @@ router.post('/:repoId/branches/:branchId/document-run', async (req, res) => {
 });
 
 router.post('/:repoId/branches/:branchId/messages', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -562,7 +584,7 @@ router.post('/:repoId/branches/:branchId/messages', async (req, res) => {
 // 'queued' session back to 'awaiting_approval' the moment a new requirement
 // is finalized on it.
 router.post('/:repoId/branches/:branchId/approve', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -598,7 +620,7 @@ router.post('/:repoId/branches/:branchId/approve', async (req, res) => {
 // time it runs this session, rather than resuming from it (that's Phase 9's
 // resume-from-step retry, a distinct feature from this one).
 router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -634,7 +656,7 @@ router.post('/:repoId/branches/:branchId/retry', async (req, res) => {
 // force-unlock) - it just stops being "the most recent session" once the new
 // one exists, so loadBranchSession/branch.ejs naturally move on from it.
 router.post('/:repoId/branches/:branchId/clear', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -664,7 +686,7 @@ router.post('/:repoId/branches/:branchId/clear', async (req, res) => {
 // pipelineRunner.resume() instead of .run() based on resume_requested, since
 // both this and /retry just leave the session 'queued'.
 router.post('/:repoId/branches/:branchId/resume', async (req, res) => {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);
@@ -697,7 +719,7 @@ router.post('/:repoId/branches/:branchId/resume', async (req, res) => {
 });
 
 async function resolveOverlap(req, res, confirmStatus, action) {
-  const access = await loadAccess(req, res);
+  const access = await loadAccess(req, res, 'write');
   if (!access) return;
 
   const loaded = await loadBranchSession(req, res, access);

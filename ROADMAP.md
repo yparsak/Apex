@@ -2952,6 +2952,81 @@ false.
   finding that out is the GitHub call `disabled` exists to avoid. An engineer who needs
   the current picture has to ask for the repo to be re-enabled.
 
+### Implementation notes
+
+Built as planned. Nine details, none of which was in the plan:
+
+- **There are eighteen call sites, not thirteen.** The plan undercounted
+  [repos.js](app/routes/repos.js)'s `loadAccess` calls: the branch *detail* GET and the
+  shared `resolveOverlap` helper behind `/requirements/:id/confirm` and `/skip` are call
+  sites too. All eighteen now name their need. The count mattering at all is the point of
+  the required argument — a defaulted `need` would have hidden the five the plan missed.
+
+- **The banner is one partial, not prose on four pages.**
+  `views/partials/repo-state-banner.ejs` renders on the repo page, the CO discovery page,
+  the branch page and the per-repo Documents page, and is silent for `enabled` — which is
+  every repo until an admin moves one, so it costs nothing on the normal path. What it
+  deliberately does *not* do is share a string with `accessStateMessage`: the 403 body is
+  reached by a stale tab and has to be a complete sentence on its own, while the banner is
+  a paragraph on a page that already shows the repo. Same content, different register.
+
+- **The hidden-panel half of the `docs` gate lives in `docRunService`, not the route.**
+  `listRunnableDocuments` already returned `[]` for a repo with on-demand runs off (Phase
+  25), and "the panel is absent entirely rather than disabled-and-greyed" is the same
+  decision for the same reason, so `disabled` joins it there. `read_only` is deliberately
+  not in that check — the read_only branch page still offers the run, which is the only
+  place in the UI where the two non-enabled rungs visibly differ.
+
+- **The requirements log gets no frozen-at-sha marker, because it cannot have one.** The
+  plan says `repo_doc_sync.synced_commit_sha` supplies the marker and that is true of the
+  generated documents, but the requirements log is written inline by
+  [requirementsLogService.js](app/lib/documents/requirementsLogService.js) as sessions
+  complete — it is not generated from a trunk commit and has no sync row to name. A
+  disabled repo starts no sessions, so "last updated" is already the honest answer there.
+
+- **`GET /documents` marks `read_only` rows too, not just `disabled` ones.** The plan only
+  asks for the disabled marker, on the reasoning that a cross-repo hit is the case where
+  the reader has no other cue. That reasoning applies to both states: someone who searched
+  their way into a read_only repo's log never passed the banner either, and "no new work is
+  being started here" is exactly what they would want to know before acting on what they
+  read.
+
+- **The drain joins `repos` rather than re-querying per job**, and reuses the existing
+  `skipped` terminal status with its own log line (`doc job skipped - repo is disabled`)
+  instead of inventing a status. The precedent is already there: a job whose definition
+  was deactivated between scan and drain ends `skipped` for the same reason — a job left
+  `queued` would quietly run against a months-stale sha whenever the repo came back, and
+  the first scan after re-enabling re-finds it with the current sha anyway.
+
+- **The note needs a length guard the plan does not mention.** `VARCHAR(500)` plus
+  MariaDB's strict mode means a 501st character is a raw 500 error, and this is a field an
+  admin will paste a paragraph into. The route refuses over-length with the usual rendered
+  error and the input carries `maxlength`. (`repos.description` is the same width with no
+  guard and still has this problem; it is not a field anyone pastes into, so it is left
+  alone rather than fixed in passing.)
+
+- **The state lookup fails closed.** `PERMITS[access_state] || PERMITS.disabled` — the
+  ENUM makes an unknown value unreachable today and a fourth ENUM value would not. A state
+  added later should arrive refusing things until it is taught the table, rather than
+  permitting everything because the lookup missed.
+
+- **Two new CSS rules.** `.state-banner` (with `.state-read_only` amber and
+  `.state-disabled` red) and `.state-note`; the compact row and card markers reuse the
+  existing `health-badge health-warning`. The banner is the overlap banner's shape with
+  its own class because the two colour differently — paused work is a warning, frozen
+  documents are a hazard.
+
+Verified end-to-end against a live stack, on three seeded repos holding one state each:
+the dashboard and `/admin/repos` markers, the banner and the absent controls on all four
+engineer-facing pages, a 403 quoting the note on a `write` POST under both non-enabled
+states, an on-demand run admitted under `read_only` and refused under `disabled`, the
+`repo.access_state` audit row carrying `from`/`to`, a doc job on a read_only repo
+generating while the disabled repo's is marked `skipped` in the same drain, and a session
+queued before a freeze still `queued` after it and claimable again the moment the repo was
+re-enabled. The CO discovery page was additionally rendered directly per state, since this
+environment has no GitHub credentials and every live request takes its
+discovery-failed path.
+
 ## Phase 28 — Removal and freezing as two clearly different things
 
 Phase 27 puts a three-position state control on the same page as

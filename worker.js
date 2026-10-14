@@ -46,7 +46,29 @@ async function pollOnce() {
   }
   if (lock.locked) return false;
 
-  const [[next]] = await db.query("SELECT id, resume_requested FROM sessions WHERE status = 'queued' ORDER BY id ASC LIMIT 1");
+  // Joined through to repos for access_state (see ROADMAP.md Phase 27). This
+  // process never goes near getAccessibleRepo, so without the join an engineer
+  // approves a run, an admin flips the repo to read_only a minute later, and the
+  // pipeline runs anyway - the claim is the only checkpoint there is.
+  //
+  // A queued session on a repo that leaves 'enabled' stays queued and is simply
+  // skipped; it is NOT failed. Flipping the repo back resumes the work exactly
+  // where it sat, which is what an admin freezing a repo for an afternoon
+  // expects. The cost is that queued work can sit invisibly, which /admin/repos
+  // answers by showing the count on the row.
+  //
+  // An already-running pipeline is not interrupted: this claim is the
+  // checkpoint, so a container mid-run finishes, writes its delivery and
+  // releases its lock. Killing it would mean a half-pushed DEV branch and a held
+  // pipeline_locks row, which is strictly worse than one more run completing.
+  const [[next]] = await db.query(
+    `SELECT s.id, s.resume_requested
+     FROM sessions s
+     JOIN branches b ON b.id = s.branch_id
+     JOIN repos r ON r.id = b.repo_id
+     WHERE s.status = 'queued' AND r.access_state = 'enabled'
+     ORDER BY s.id ASC LIMIT 1`
+  );
   if (!next) return false;
 
   // resume_requested (see ROADMAP.md Phase 9) distinguishes a resume-from-

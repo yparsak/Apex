@@ -66,9 +66,22 @@ SELECT * FROM pipeline_locks WHERE repo_id = ? AND co_number = ?;
 ## Pipeline issues
 
 **A session sits in `queued` forever.**
-`apex-worker` isn't running. `make dev` alone starts the web app, which is enough to
-browse repos and clarify requirements — nothing picks up `queued` sessions without
-`make worker` also running. Confirm with `docker ps` / `docker logs apex-worker`.
+Two causes, and the second leaves no error anywhere:
+
+1. `apex-worker` isn't running. `make dev` alone starts the web app, which is enough to
+   browse repos and clarify requirements — nothing picks up `queued` sessions without
+   `make worker` also running. Confirm with `docker ps` / `docker logs apex-worker`.
+2. **The repo is no longer `enabled`** (ROADMAP.md Phase 27). The claim query only takes
+   sessions whose repo is in the `enabled` state, so a run approved before an admin set
+   the repo to **Read-only** or **Disabled** stays queued and is skipped silently — it is
+   deliberately *not* failed, so that re-enabling the repo resumes it exactly where it
+   sat. `/admin/repos` shows the queued count on every non-enabled row, and
+   `admin_audit_log` (`repo.access_state`, whose detail carries `from`, `to` and the
+   note) says who changed it and when. Setting the repo back to **Enabled** is the fix;
+   nothing needs re-approving.
+
+A pipeline that was *already running* when the state changed is not interrupted — the
+claim is the only checkpoint, so that container finishes, pushes and releases its lock.
 
 **Pipeline fails immediately with "has no apex.pipeline.json" / "is not valid JSON" /
 "is missing a non-empty field".**
@@ -322,6 +335,15 @@ a different thing entirely and cannot be the cause: it stores nothing, so it nei
 refreshes a stale document nor prevents one from refreshing. See "An on-demand document
 run failed" below.)
 
+0. **Check the repo's state on `/admin/repos` first** (ROADMAP.md Phase 27). A
+   **Disabled** repo is skipped by the nightly scan entirely and any job already queued
+   for it is marked `skipped` at drain time, so its documents stay frozen at the commit
+   they were last written from — by design, and the one cause in this list that is
+   *supposed* to produce a stale document. This is not silent: the repo's Documents page
+   marks every document "Regeneration paused — frozen at `<sha>`", and the repo's own
+   pages carry a banner with the admin's note. **Read-only** is not a cause: a read_only
+   repo keeps regenerating nightly and on demand, which is the whole difference between
+   the two states.
 1. **Check that a document is defined at all, and that it is active, on
    `/admin/documents`** (ROADMAP.md Phase 24). Apex ships with no document definitions —
    on a fresh install nothing is generated and nothing is wrong; `logs/doc-worker.log`
@@ -357,9 +379,15 @@ run failed" below.)
 
 ## "Run a document against this branch" isn't on the branch page
 
-The panel is absent — not greyed out — whenever it cannot be used, so there are three
-things to check, and they answer different questions (ROADMAP.md Phase 25). None
-subsumes another:
+The panel is absent — not greyed out — whenever it cannot be used, so there are four
+things to check, and they answer different questions (ROADMAP.md Phase 25, Phase 27).
+None subsumes another:
+
+0. **Is the repo `disabled`?** A disabled repo generates nothing, on demand or overnight,
+   so the panel is gone and the POST is refused with a 403 quoting the admin's note.
+   A **read_only** repo still offers the run — keeping documents current is exactly what
+   separates it from disabled. `/admin/repos` has the state; `admin_audit_log`
+   (`repo.access_state`) has who set it.
 
 1. **Is any document active at all?** The picker is populated from the same active
    definitions the nightly scan uses, so an install with nothing defined on
@@ -471,6 +499,16 @@ repos.**
 Access is granted per `(user, repo_group)` via `user_repo_group_permissions` — there is
 no separate per-repo or per-action grant. Confirm the grant exists on
 `/admin/permissions` for that user and group.
+
+**A user can open a repo and read everything, but every button is gone and any POST is
+refused.**
+That is the repo's `access_state`, not their permissions (ROADMAP.md Phase 27) — the two
+are separate gates and only the first is per-user. `read_only` removes starting new work;
+`disabled` also removes document generation; neither removes reading, which is why the
+repo is still there. The refusal quotes `repos.access_state_note`, which is the admin's
+own sentence about why, and the same note is on a banner on the repo's pages. Change it on
+`/admin/repos`. **Admins get no bypass here** — the state describes the repo, not the
+viewer, so an admin trying to reproduce the complaint sees exactly what the engineer sees.
 
 ## Environment reference
 

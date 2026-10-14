@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS repos (
   -- repo whose spend needs containing - not the norm. Defaulting to off would
   -- ship the feature invisible behind a switch nobody knows to look for.
   on_demand_docs_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  -- Phase 27: the repo's lifecycle state, as a strict ladder of capabilities.
+  -- `enabled` is everything; `read_only` keeps reading AND document generation
+  -- but starts no new branch or pipeline work; `disabled` keeps reading only,
+  -- with documents frozen at whatever they were last generated from.
+  --
+  -- Reading is never removed, so NO state hides a repo from anyone with the
+  -- group permission - which is why nothing in the codebase has to filter repos
+  -- by this column, only refuse actions on them (see app/lib/repoAccess.js).
+  --
+  -- Named access_state and NOT `status`: branches.status already exists meaning
+  -- something else entirely, and two columns named `status` on adjacent tables
+  -- with unrelated enums is how the wrong one gets joined. No index either: the
+  -- filter never runs without repo_group_id or r.id already narrowing it.
+  access_state ENUM('enabled','read_only','disabled') NOT NULL DEFAULT 'enabled',
+  -- The answer to "why can't I create a branch here" and "why is this document
+  -- three months old". Deliberately one free-text field and not a reason enum:
+  -- the useful notes are things like "frozen until the Q1 audit closes, ask
+  -- Dana" and no enum predicts those.
+  access_state_note VARCHAR(500) NULL,
   -- Superseded by the repo_doc_sync table in Phase 23 and no longer read or
   -- written by any code. Kept, not dropped: the backfill below reads it, and
   -- dropping a column is the one genuinely irreversible step in that migration
@@ -773,6 +792,23 @@ ALTER TABLE repos ADD COLUMN IF NOT EXISTS on_demand_docs_enabled TINYINT(1) NOT
 -- existing row verbatim and is naturally idempotent (it restates the target
 -- type), same as the Phase 23 ENUM -> VARCHAR above.
 ALTER TABLE usage_events MODIFY COLUMN call_site VARCHAR(80) NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Phase 27: repository access state
+--
+-- Upgrade path for a database created before Phase 27; on a fresh install both
+-- statements are no-ops, because the definition above already describes the end
+-- state.
+-- ---------------------------------------------------------------------------
+
+-- Every existing repo backfills to 'enabled' via the column default, which IS
+-- today's behavior - an upgrade changes nothing until an admin moves a repo.
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS
+  access_state ENUM('enabled','read_only','disabled') NOT NULL DEFAULT 'enabled'
+  AFTER on_demand_docs_enabled;
+
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS access_state_note VARCHAR(500) NULL
+  AFTER access_state;
 
 -- ---------------------------------------------------------------------------
 -- express-session store. Deliberately NOT named `sessions` - that name is

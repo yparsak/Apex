@@ -1,0 +1,28 @@
+<%# Repository access state (see ROADMAP.md Phase 27). Rendered on every
+    engineer-facing page that is scoped to one repo, and silent when the repo is
+    `enabled` - which is every repo until an admin moves one, so this adds
+    nothing to the normal page.
+
+    It says what is unavailable rather than naming the enum value: "disabled"
+    read on its own means *gone*, and under this design it emphatically does not
+    - the repo is still here and still readable. The note is the admin's own
+    sentence about why, and is the reason this phase has a free-text field at
+    all. %>
+<% if (repo.access_state !== 'enabled') { %>
+  <div class="state-banner state-<%= repo.access_state %>">
+    <% if (repo.access_state === 'read_only') { %>
+      <p>
+        <strong>Read-only.</strong> This repo can be read and its documents keep updating, but no new
+        branch or pipeline work can be started here.
+      </p>
+    <% } else { %>
+      <p>
+        <strong>Disabled.</strong> This repo can be read and every document it already has stays
+        readable, but nothing new is generated or started &mdash; documents are frozen where they are.
+      </p>
+    <% } %>
+    <% if (repo.access_state_note) { %>
+      <p class="state-note"><%= repo.access_state_note %></p>
+    <% } %>
+  </div>
+<% } %>

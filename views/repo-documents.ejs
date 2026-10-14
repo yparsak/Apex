@@ -5,9 +5,16 @@
   <main class="content">
     <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
     <h1>Documents</h1>
+    <%- include('partials/repo-state-banner', { repo: repo }) %>
 
     <h2>Requirements log</h2>
     <% if (requirementsLog) { %>
+      <%# No frozen marker and no sha here, unlike the generated documents
+          below: the requirements log is written inline as sessions complete
+          (requirementsLogService.js), not generated from a trunk commit, so
+          there is no repo_doc_sync row and nothing to name it as frozen AT. A
+          disabled repo starts no sessions, so "last updated" is already the
+          honest answer. %>
       <p class="placeholder">Last updated <%= requirementsLog.updated_at %></p>
       <pre class="document-body"><%= requirementsLog.content %></pre>
     <% } else { %>
@@ -24,12 +31,32 @@
       <h2><%= d.label %></h2>
       <% if (d.description) { %><p class="placeholder"><%= d.description %></p><% } %>
       <% if (d.doc) { %>
-        <p class="placeholder">
-          Last updated <%= d.doc.updated_at %><% if (!d.active) { %> — no longer regenerating<% } %>
-        </p>
+        <%# The one hazard the ladder introduces (see ROADMAP.md Phase 27): under
+            `disabled` a document stays readable and stops tracking trunk, so
+            without this marker an engineer opens something that looks exactly
+            like a current document and is not. Silent staleness is worse than no
+            document, so the pause is stated on the document itself and not only
+            in the banner at the top of the page.
+
+            It names the commit the text came from and does not say how far trunk
+            has moved since, because finding that out is the GitHub call
+            `disabled` exists to avoid. %>
+        <% if (repo.access_state === 'disabled') { %>
+          <p class="placeholder">
+            <span class="health-badge health-warning">Regeneration paused</span>
+            <% if (d.syncedSha) { %>frozen at <code><%= d.syncedSha %></code>, <% } %>
+            last updated <%= d.doc.updated_at %>
+          </p>
+        <% } else { %>
+          <p class="placeholder">
+            Last updated <%= d.doc.updated_at %><% if (!d.active) { %> — no longer regenerating<% } %>
+          </p>
+        <% } %>
         <pre class="document-body"><%= d.doc.content %></pre>
       <% } else if (!d.active) { %>
         <p class="placeholder">Not generated, and not set to generate.</p>
+      <% } else if (repo.access_state === 'disabled') { %>
+        <p class="placeholder">Not generated, and not generating while this repo is disabled.</p>
       <% } else { %>
         <p class="placeholder">Not generated yet — regenerates automatically on the next nightly run, once trunk has content to summarize.</p>
       <% } %>

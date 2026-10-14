@@ -5,6 +5,7 @@
   <main class="content">
     <p><a href="/"><%= org.name %> / <%= repoGroup.name %></a> / <a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
     <h1>Branches for <%= coNumber %></h1>
+    <%- include('partials/repo-state-banner', { repo: repo }) %>
     <% if (error) { %><p class="error"><%= error %></p><% } %>
 
     <% if (discoveryError) { %>
@@ -29,18 +30,25 @@
               <td>
                 <% if (e.state === 'untracked') { %>Not tracked<% } else { %><%= e.state.charAt(0).toUpperCase() + e.state.slice(1) %><% } %>
               </td>
+              <%# Discovery is a read, so the list renders in all three access
+                  states; what it offers to DO with each branch does not (see
+                  ROADMAP.md Phase 27). This reuses the shape the
+                  GitHub-unreachable path already has - the table with no create
+                  option - with a different explanation. %>
               <td class="row-form">
-                <% if (e.state === 'active') { %>
-                  <form method="POST" action="/repos/<%= repo.id %>/branches/<%= e.row.id %>/continue" class="inline-form">
-                    <button type="submit" class="link-button">Continue</button>
-                  </form>
-                <% } else if (e.adoptable) { %>
-                  <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/adopt" class="inline-form">
-                    <input type="hidden" name="branch_name" value="<%= e.branchName %>">
-                    <button type="submit" class="link-button">Adopt &amp; continue</button>
-                  </form>
-                <% } else { %>
-                  <span class="placeholder"><%= e.blockedReason %></span>
+                <% if (repo.access_state === 'enabled') { %>
+                  <% if (e.state === 'active') { %>
+                    <form method="POST" action="/repos/<%= repo.id %>/branches/<%= e.row.id %>/continue" class="inline-form">
+                      <button type="submit" class="link-button">Continue</button>
+                    </form>
+                  <% } else if (e.adoptable) { %>
+                    <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/adopt" class="inline-form">
+                      <input type="hidden" name="branch_name" value="<%= e.branchName %>">
+                      <button type="submit" class="link-button">Adopt &amp; continue</button>
+                    </form>
+                  <% } else { %>
+                    <span class="placeholder"><%= e.blockedReason %></span>
+                  <% } %>
                 <% } %>
               </td>
             </tr>
@@ -53,14 +61,16 @@
         </p>
       <% } %>
 
-      <h2>Create new branch</h2>
-      <p>
-        Next available increment for <strong><%= user.initials %></strong>:
-        <code><%= proposedBranchName %></code>
-      </p>
-      <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/create">
-        <button type="submit">Create branch from <%= repo.default_branch_name %></button>
-      </form>
+      <% if (repo.access_state === 'enabled') { %>
+        <h2>Create new branch</h2>
+        <p>
+          Next available increment for <strong><%= user.initials %></strong>:
+          <code><%= proposedBranchName %></code>
+        </p>
+        <form method="POST" action="/repos/<%= repo.id %>/co/<%= coNumber %>/create">
+          <button type="submit">Create branch from <%= repo.default_branch_name %></button>
+        </form>
+      <% } %>
     <% } %>
   </main>
 <%- include('partials/foot') %>

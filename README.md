@@ -122,6 +122,46 @@ Two things make it worth doing, and one thing is worth being clear about:
   containing. Turning it off does **not** stop that repo's nightly documents, which keep
   arriving either way.
 
+## Freezing a repo without hiding it
+
+A repo that should stop accepting work needs somewhere to go that is not deletion. On
+`/admin/repos` every repo has a three-position **State**, and each step down removes
+exactly one capability:
+
+| | read the repo | generate documents | create branches & run pipelines |
+|---|---|---|---|
+| **Enabled** | ✓ | ✓ | ✓ |
+| **Read-only** — documents still update | ✓ | ✓ | ✗ |
+| **Disabled** — view only, documents frozen | ✓ | ✗ | ✗ |
+
+**Every repo stays visible in all three states, to everyone with access to its group.**
+Reading is never what gets removed — a frozen repo is still a repo you can open, browse
+and search, which is the point of freezing it rather than deleting it.
+
+- **Read-only** is for a repo Apex should keep *describing* but stop *changing*. Its
+  documents stay current: the nightly run still regenerates them and engineers can still
+  run one against a branch. Nothing new may be started — no branch created or adopted, no
+  pipeline approved, retried or resumed, no branch deactivated or deleted.
+- **Disabled** is for a repo that is dormant. Nothing is generated, so its documents stay
+  frozen at the commit they were last written from, and the repo costs no GitHub calls and
+  no model spend overnight. Everything already written stays readable — **and says it is
+  frozen**, on each document and on the cross-repo search, naming the commit it came from.
+
+Each state carries a **note** — free text, shown to engineers on the repo's own pages and
+quoted in every refusal. It is the answer to "why can't I create a branch here", and the
+useful ones ("frozen until the Q1 audit closes, ask Dana") are the kind no dropdown
+predicts.
+
+Two things worth knowing:
+
+- **Approved work is paused, not lost.** A run already queued when a repo leaves Enabled
+  stays queued and simply does not start; setting the repo back to Enabled resumes it
+  where it sat, with no re-approval. `/admin/repos` shows the count on the row so that
+  paused work is not invisible. A pipeline that was already *running* finishes — killing
+  it mid-flight would leave a half-pushed branch behind.
+- **Admins get no bypass.** The state describes the repo, not the viewer, so an admin sees
+  exactly what an engineer sees. Managing the state is what `/admin/repos` is for.
+
 ## Documentation
 
 | Document | For |

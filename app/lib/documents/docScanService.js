@@ -54,11 +54,22 @@ async function scanForStaleRepos() {
     return;
   }
 
+  // read_only is included on purpose (see ROADMAP.md Phase 27). This is the one
+  // place in the codebase where the two non-enabled states diverge, and it is
+  // the reason read_only exists as a separate rung rather than being folded into
+  // disabled: a read_only repo is one Apex should keep DESCRIBING and stop
+  // changing, so its documents stay current.
+  //
+  // `disabled` is the only state that stops a dormant repo consuming a GitHub
+  // call and a model generation every night, for documents nobody is reading
+  // against a trunk that is not moving. That saving is the whole reason the state
+  // is worth having now that it no longer hides anything.
   const [repos] = await db.query(
     `SELECT r.id, r.name, r.default_branch_name, o.name AS org_name
      FROM repos r
      JOIN repo_groups rg ON rg.id = r.repo_group_id
-     JOIN orgs o ON o.id = rg.org_id`
+     JOIN orgs o ON o.id = rg.org_id
+     WHERE r.access_state <> 'disabled'`
   );
 
   for (const repo of repos) {

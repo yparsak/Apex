@@ -21,6 +21,21 @@
         <% results.forEach(function(r) { %>
           <div class="document-result">
             <h3><a href="/repos/<%= r.repo.id %>/documents"><%= r.repo.org_name %> / <%= r.repo.repo_group_name %> / <%= r.repo.name %></a></h3>
+            <%# A hit from a dormant repo is exactly the case where the reader
+                has no other cue - they did not navigate through that repo's
+                pages to get here, so the banner those carry never reached them
+                (see ROADMAP.md Phase 27). %>
+            <% if (r.repo.access_state === 'disabled') { %>
+              <p class="placeholder">
+                <span class="health-badge health-warning">Repo disabled</span>
+                nothing new is generated or recorded here<% if (r.repo.access_state_note) { %> &mdash; <%= r.repo.access_state_note %><% } %>
+              </p>
+            <% } else if (r.repo.access_state === 'read_only') { %>
+              <p class="placeholder">
+                <span class="health-badge health-warning">Repo read-only</span>
+                documents still update, but no new work is being started here<% if (r.repo.access_state_note) { %> &mdash; <%= r.repo.access_state_note %><% } %>
+              </p>
+            <% } %>
             <pre class="document-body"><%= r.body %></pre>
           </div>
         <% }) %>
