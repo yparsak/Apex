@@ -15,7 +15,65 @@ const ACCESS_STATES = [
   { value: 'disabled', label: 'Disabled — view only, documents frozen' },
 ];
 
+// Everything that points at a repo, in the order an admin cares about it (see
+// ROADMAP.md Phase 28). This list exists to answer "why can't I delete this",
+// so it has to stay exhaustive: every FOREIGN KEY ... REFERENCES repos (id) in
+// db/schema.sql is here, which is what makes "nothing references this repo"
+// trustworthy enough to proceed on. `sessions` is the one entry that is not
+// itself a blocker - it reaches the repo through `branches` - and it is counted
+// anyway because pipeline runs are the history an admin is actually weighing,
+// and a repo with sessions always has the branches they hang off, so it can
+// never be the only thing standing in the way.
+const REPO_REFERENCES = [
+  { singular: 'change order', plural: 'change orders', table: 'change_orders' },
+  { singular: 'branch', plural: 'branches', table: 'branches' },
+  {
+    singular: 'pipeline run',
+    plural: 'pipeline runs',
+    sql: 'SELECT COUNT(*) FROM sessions s JOIN branches b ON b.id = s.branch_id WHERE b.repo_id = ?',
+  },
+  { singular: 'generated document', plural: 'generated documents', table: 'repo_documents' },
+  { singular: 'document job', plural: 'document jobs', table: 'doc_jobs' },
+  { singular: 'document sync record', plural: 'document sync records', table: 'repo_doc_sync' },
+  { singular: 'pipeline lock', plural: 'pipeline locks', table: 'pipeline_locks' },
+  {
+    singular: 'clarification instruction',
+    plural: 'clarification instructions',
+    table: 'repo_clarification_instructions',
+  },
+  { singular: 'blocked-allowlist alert', plural: 'blocked-allowlist alerts', table: 'blocked_allowlist_alerts' },
+  { singular: 'lock contention event', plural: 'lock contention events', table: 'lock_contention_events' },
+  { singular: 'usage event', plural: 'usage events', table: 'usage_events' },
+  { singular: 'file map', plural: 'file maps', table: 'repo_file_maps' },
+];
+
+// "12 change orders, 34 sessions" from the plan, built as one round trip of
+// scalar subqueries rather than a query per table - twelve sequential COUNTs on
+// the click that refuses an action is a lot of work to say no.
+async function describeRepoReferences(repoId) {
+  const selects = REPO_REFERENCES.map(
+    (ref, i) => `(${ref.sql || `SELECT COUNT(*) FROM ${ref.table} WHERE repo_id = ?`}) AS c${i}`
+  );
+  const [[counts]] = await db.query(
+    `SELECT ${selects.join(', ')}`,
+    REPO_REFERENCES.map(() => repoId)
+  );
+  return REPO_REFERENCES.map((ref, i) => ({ ref, count: Number(counts[`c${i}`]) }))
+    .filter((row) => row.count > 0)
+    .map(({ ref, count }) => `${count} ${count === 1 ? ref.singular : ref.plural}`);
+}
+
+function formatList(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
 async function renderRepos(req, res, error) {
+  // Frozen repos sort last (and recede visually in the view) so they stop
+  // competing for attention with live ones. `access_state = 'disabled'`
+  // evaluates to 0/1, so this is one leading sort key and the existing
+  // org/group/name order is untouched within each half - a disabled repo is
+  // still exactly where alphabetical order puts it, just below the fold.
   const [repos] = await db.query(
     `SELECT r.id, r.name, r.description, r.default_branch_name, r.repo_group_id,
             r.on_demand_docs_enabled, r.access_state, r.access_state_note,
@@ -23,7 +81,7 @@ async function renderRepos(req, res, error) {
      FROM repos r
      JOIN repo_groups rg ON rg.id = r.repo_group_id
      JOIN orgs o ON o.id = rg.org_id
-     ORDER BY o.name, rg.name, r.name`
+     ORDER BY r.access_state = 'disabled', o.name, rg.name, r.name`
   );
   // Queued sessions per repo. A session queued on a repo that is not `enabled`
   // stays queued and is skipped by worker.js rather than failed, so the work can
@@ -140,18 +198,60 @@ router.post('/:id/access-state', async (req, res) => {
   res.redirect('/admin/repos');
 });
 
+// Delete is the removal verb and `disabled` is explicitly not one (see
+// ROADMAP.md Phase 28). The foreign keys mean this only ever succeeds on a repo
+// nothing references - a repo added by mistake and never used - and that limit
+// is deliberate: cascading a delete through change_orders, sessions,
+// repo_documents, usage_events and the rest would destroy the regulatory record
+// those tables exist to keep. So the job here is not to make delete work more
+// often, it is to make the refusal say what is in the way and name the
+// reversible option the admin probably meant.
 router.post('/:id/delete', async (req, res) => {
+  const repoId = Number(req.params.id);
+  const [[repo]] = await db.query('SELECT name, access_state FROM repos WHERE id = ?', [repoId]);
+  if (!repo) return renderRepos(req, res, 'That repo no longer exists.');
+
+  // Counted up front rather than read back off the FK error, because the error
+  // code says only "something referenced it" - it names neither the table nor
+  // how much. The admin's actual question is how much history is at stake, and
+  // that only has an answer before the DELETE is attempted.
+  const references = await describeRepoReferences(repoId);
+  if (references.length) {
+    // The recommendation changes when the repo is already frozen: telling an
+    // admin to set a state it is already in reads as the page not having looked.
+    const freeze =
+      repo.access_state === 'disabled'
+        ? 'Its State is already Disabled, which is the retirement this page offers: everything above stays readable and nothing is generated or spent.'
+        : 'To retire it instead, set its State to Disabled — everything above stays readable and nothing is generated or spent.';
+    return renderRepos(
+      req,
+      res,
+      `Cannot delete ${repo.name}: it has ${formatList(references)}, and deleting the repo would destroy ` +
+        `all of it. ${freeze} Delete only succeeds on a repo nothing references, such as one added by ` +
+        `mistake and never used.`
+    );
+  }
+
   try {
-    await db.query('DELETE FROM repos WHERE id = ?', [req.params.id]);
+    await db.query('DELETE FROM repos WHERE id = ?', [repoId]);
     await logAdminAction({
       adminUserId: req.session.user.id,
       action: 'repo.delete',
-      detail: { repoId: Number(req.params.id) },
+      detail: { repoId, name: repo.name },
     });
     res.redirect('/admin/repos');
   } catch (err) {
+    // Unreachable via the count above unless a reference landed in the gap
+    // between the two queries, or a table started referencing repos without
+    // being added to REPO_REFERENCES. Kept as the backstop that makes the list
+    // above safe to be wrong about: the FK, not the count, is what actually
+    // protects the history.
     if (err.code === 'ER_ROW_IS_REFERENCED_2') {
-      return renderRepos(req, res, 'Cannot delete: this repo still has change orders, branches, or documents.');
+      return renderRepos(
+        req,
+        res,
+        `Cannot delete ${repo.name}: something still references it. Freeze it instead by setting its State to Disabled.`
+      );
     }
     throw err;
   }

@@ -510,6 +510,21 @@ own sentence about why, and the same note is on a banner on the repo's pages. Ch
 `/admin/repos`. **Admins get no bypass here** — the state describes the repo, not the
 viewer, so an admin trying to reproduce the complaint sees exactly what the engineer sees.
 
+**Delete on `/admin/repos` refuses, and the repo needs to go away.**
+It is working as intended (ROADMAP.md Phase 28). Delete removes the repo row itself and
+the foreign keys only let it succeed on a repo nothing references — in practice, one added
+by mistake and never used. The refusal now counts what is in the way ("12 change orders, 1
+branch, 34 pipeline runs…"), and every one of those counts is a record something else
+depends on; cascading the delete through them would destroy the audit trail those tables
+exist to keep, so there is no force-delete and no plan to add one. **The retirement verb is
+State → Disabled**, which keeps all of that history readable while stopping every GitHub
+call and all model spend on the repo. A disabled repo also sorts to the bottom of
+`/admin/repos` and greys out, so it stops competing for attention with live ones.
+
+If the refusal lists nothing you recognise, the counts name the table: `document sync
+records` and `file maps` are written by the nightly document runs, and `usage events` by
+any model call, so a repo that has only ever been scanned can still be un-deletable.
+
 ## Environment reference
 
 Full variable list and what each controls: see

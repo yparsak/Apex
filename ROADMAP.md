@@ -3062,6 +3062,62 @@ the way and pointed at `disabled`; an admin who wants the row genuinely gone for
 mistakenly-added repo still gets it in one click; and the two controls no longer look
 like two spellings of the same action.
 
+### Implementation notes
+
+Built as planned. Six details, none of which was in the plan:
+
+- **The counts are taken before the DELETE, not read off its error.** The plan says the
+  refusal becomes a count, and the only place a count can be had is *before* the attempt:
+  `ER_ROW_IS_REFERENCED_2` names neither the table nor how many rows. So
+  `describeRepoReferences()` runs first and the FK catch stays as the backstop behind it.
+  That inverts what each one is for — the count is the explanation, the FK is the
+  enforcement — and it is why the list being wrong is survivable: a table added later that
+  nobody adds to `REPO_REFERENCES` still cannot be deleted through, it just gets the terse
+  refusal instead of the itemised one.
+
+- **There are eleven referencing tables, and `sessions` is not one of them.** Every
+  `FOREIGN KEY … REFERENCES repos (id)` is in the list (`change_orders`, `branches`,
+  `pipeline_locks`, `repo_clarification_instructions`, `blocked_allowlist_alerts`,
+  `lock_contention_events`, `repo_documents`, `doc_jobs`, `repo_doc_sync`, `usage_events`,
+  `repo_file_maps`), which is what makes "nothing references this repo" trustworthy enough
+  to proceed on. `sessions` reaches the repo through `branches` and is counted anyway,
+  because the plan's own example sentence names it and pipeline runs are the history an
+  admin is actually weighing — and it can never be the only blocker, since the branches it
+  hangs off are blockers themselves.
+
+- **Twelve scalar subqueries in one round trip**, not a query per table. Twelve sequential
+  `COUNT(*)`s is a lot of database work to say no with, and the whole point of the phase is
+  that this path is the *common* one.
+
+- **The recommendation is conditional on the current state.** Telling an admin to set
+  Disabled on a repo that is already Disabled reads as the page not having looked; that
+  case gets "its State is already Disabled, which is the retirement this page offers"
+  instead. It is the likeliest case to hit, too — freezing first and then trying to delete
+  is exactly the sequence the phase expects.
+
+- **The row confirm does not name the repo.** The natural wording is "Delete *alpha*?",
+  but the name is admin-entered free text, and one apostrophe in it breaks the `onsubmit`
+  JS string — which does not disable the confirm, it removes it, leaving Delete to fire
+  bare. That is the hazard [models.ejs](views/admin/models.ejs):82 already documents, so
+  the text stays generic and the *route's* refusal, which is server-side and escaped, is
+  where the name appears.
+
+- **The frozen row greys its cells, not the row.** `.repo-row-frozen td` sets colour and
+  background rather than putting `opacity` on the `<tr>`, because opacity would dim the
+  Delete button too — the one control on the row that must never look softer than it is.
+  The sort key is `r.access_state = 'disabled'` as a leading 0/1 term, so alphabetical
+  order survives untouched inside each half.
+
+Verified end-to-end against the live stack on the three seeded state-holding repos: each
+refusal itemised that repo's real counts and nothing else (`1 change order, 1 branch and 1
+pipeline run` for one with no documents; `… 2 generated documents, 1 document job and 1
+document sync record` for the disabled one), singular and plural both rendered, the
+already-Disabled repos got the already-frozen wording and the read_only one got
+"set its State to Disabled", a repo created and immediately deleted redirected with a
+`repo.delete` audit row carrying its name, a POST for a nonexistent id gave "That repo no
+longer exists", and setting a repo alphabetically first to `disabled` moved it below the
+other two while leaving their order intact.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:

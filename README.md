@@ -162,6 +162,19 @@ Two things worth knowing:
 - **Admins get no bypass.** The state describes the repo, not the viewer, so an admin sees
   exactly what an engineer sees. Managing the state is what `/admin/repos` is for.
 
+### Disabled is how a repo is retired. Delete is not.
+
+`/admin/repos` also has a Delete button, and the two are not alternatives. Delete removes
+the repo row itself, and only succeeds on a repo nothing references — one added by mistake
+and never used. As soon as a repo has change orders, branches, runs or documents, deleting
+it would destroy the record those tables exist to keep, so it is refused, and **the refusal
+says how much history is in the way** ("12 change orders, 1 branch, 34 pipeline runs") and
+points at Disabled. There is no cascading delete and none is planned: an audit trail that
+can be erased from a web form is not an audit trail.
+
+So the two controls are kept visually apart on the row, and a Disabled repo sorts to the
+bottom of the list and greys out — retired, still readable, out of the way.
+
 ## Documentation
 
 | Document | For |

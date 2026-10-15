@@ -92,6 +92,14 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
   actions on them. The note is free text and is quoted to the engineer in every refusal
   and banner. The two gates compose and neither subsumes the other: permissions are
   per-user and this is per-repo, so **admins get no bypass** on engineer-facing surfaces.
+  `disabled` is the **retirement** state and is deliberately not a removal: a repo row is
+  only ever deleted by `POST /admin/repos/:id/delete`, which succeeds solely on a repo no
+  other table references. There is **no cascading repo delete** — the eleven tables with a
+  `FOREIGN KEY … REFERENCES repos (id)` are the regulatory record, and the FK is what
+  guarantees a web form cannot erase it. The route counts those references (plus
+  `sessions`, reached through `branches`) before attempting the DELETE so the refusal can
+  name what is in the way, and keeps catching `ER_ROW_IS_REFERENCED_2` as the backstop that
+  holds if that list ever drifts from the schema (ROADMAP.md Phase 28).
 
 **Change orders & branches**
 - `change_orders` — one row per `(repo, co_number)`, created on first use.

@@ -607,3 +607,19 @@ body {
 .model-picker select {
   max-width: 24rem;
 }
+
+/* Phase 28. A frozen repo recedes rather than disappears - it sorts last and
+   greys out, but every control stays usable, because re-enabling it is done
+   from this row. Opacity on the whole <tr> would also dim the Delete button,
+   which is the one thing on the row that must not look softer than it is. */
+.repo-row-frozen td {
+  color: #6b7280;
+  background: #f9fafb;
+}
+
+/* The removal column, held apart from the routine controls by a rule rather
+   than by distance - a table row has no room for whitespace to do the work. */
+.row-danger-cell {
+  border-left: 1px solid #e5e7eb;
+  padding-left: 1rem !important;
+}

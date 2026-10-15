@@ -29,11 +29,25 @@
       written from, and the repo costs no GitHub calls and no model spend overnight. The note is shown
       to engineers on the repo's own pages and is the answer to "why can't I create a branch here".
     </p>
+    <%# The two ways to retire a repo are on this same row, and they are not
+        alternatives - delete is the removal verb and Disabled is explicitly not
+        one (see ROADMAP.md Phase 28). Saying so here is what stops an admin
+        picking the irreversible one meaning the reversible one. %>
+    <p class="placeholder">
+      <strong>Disabled is how a repo is retired. Delete is not.</strong> Delete removes the row itself and
+      only succeeds on a repo nothing references &mdash; one added by mistake and never used. The moment a
+      repo has change orders, branches, runs or documents, deleting it would destroy the record those
+      tables exist to keep, so it is refused and the refusal names how much history is in the way.
+      Setting State to <strong>Disabled</strong> is the retirement that keeps all of it readable.
+    </p>
     <table class="admin-table">
-      <thead><tr><th>Repo Group</th><th>Name</th><th>Description</th><th>Default Branch</th><th>State</th><th></th></tr></thead>
+      <thead><tr><th>Repo Group</th><th>Name</th><th>Description</th><th>Default Branch</th><th>State</th><th class="row-danger-cell">Remove</th></tr></thead>
       <tbody>
+        <%# Disabled repos sort last (see the ORDER BY in repos.js) and recede
+            here, so a frozen repo stops competing for attention with live ones
+            without becoming hard to find. %>
         <% repos.forEach(function(repo) { %>
-        <tr>
+        <tr<%= repo.access_state === 'disabled' ? ' class="repo-row-frozen"' : '' %>>
           <td colspan="4">
             <form method="POST" action="/admin/repos/<%= repo.id %>/update" class="row-form">
               <select name="repo_group_id">
@@ -79,8 +93,19 @@
               </p>
             <% } %>
           </td>
-          <td>
-            <form method="POST" action="/admin/repos/<%= repo.id %>/delete" class="row-form">
+          <%# Set apart from the rest of the row - its own cell, its own rule,
+              its own confirm - for the reason Phase 26 moved Delete off the
+              documents list: the routine controls and the irreversible one
+              should not read as two spellings of the same action. The confirm
+              describes the limit rather than asking "are you sure", since the
+              honest answer for a referenced repo is that this will refuse. It
+              deliberately does not name the repo: an admin-entered name holding
+              an apostrophe would break the handler's JS string, and a confirm
+              that fails to parse is a Delete that fires with no confirm at all
+              (the hazard models.ejs already notes). %>
+          <td class="row-danger-cell">
+            <form method="POST" action="/admin/repos/<%= repo.id %>/delete" class="row-form"
+              onsubmit="return confirm('Delete this repo row? This is not how a repo is retired - it only succeeds if nothing references it, and it cannot be undone. To retire a repo with history, set its State to Disabled instead.')">
               <button type="submit" class="danger-button">Delete</button>
             </form>
           </td>
