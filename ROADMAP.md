@@ -3263,6 +3263,109 @@ not a blocker for this phase, which is reproducible from the parser alone, but i
 this had to be read backwards from the committed file, and it belongs with the
 observability work rather than here.
 
+## Phase 31 — The branch page follows a running pipeline by itself
+
+A user who clicks Approve & Implement gets a page that is correct at the instant it
+rendered and then never changes again. The pipeline moves through clone, codegen, build,
+test and push over several minutes; the stepper showing those steps
+([pipelineStepper.js](app/lib/pipelineStepper.js):44) is a static snapshot, and the only
+way to see the next one is to press F5. **The data to do better is already being written
+— `pipeline_runs.stage` is updated as each step begins
+([pipelineRunner.js](app/lib/pipeline/pipelineRunner.js):72) — it simply never reaches a
+page that has already been sent.** This phase polls for it.
+
+**This is the first client-side JavaScript in Apex.** `public/` contains `css` and
+nothing else, and no view carries a `<script>` tag. That is worth stating plainly because
+it sets the standard for the ones that follow, and because the plumbing is already in
+place: `express.static` is mounted ([app.js](app.js):24), so `public/js/` is served with
+no configuration change, and `app/routes/apiAdmin.js` already establishes the
+`res.json({ ... })` shape to copy.
+
+- **`GET /repos/:repoId/branches/:branchId/status`, returning JSON.** Status, stage, both
+  stepper arrays, `commit_sha`, `error_message`, and a `terminal` flag.
+  [pipelineStepper.js](app/lib/pipelineStepper.js) is reused exactly as it stands — it is
+  already pure computation with no I/O, which is precisely what lets one module serve
+  both the HTML render and this endpoint. **Two derivations of "which step are we on"
+  would drift, and the drift would show up as the stepper disagreeing with itself across
+  a refresh.**
+- **The same `loadAccess(req, res, 'read')` guard as the page.** A JSON endpoint must not
+  be a cheaper way to read a repo than the page it belongs to, and it inherits Phase 27's
+  access states for free by going through the same loader.
+- **Polling starts only when the rendered page is `queued` or `running`, and stops for
+  good at the first terminal status**, followed by a single full reload. The reload is
+  not laziness: on completion the page gains the build and test logs, the commit SHA, the
+  failure actions and a released pipeline lock, and re-rendering server-side is the only
+  way all of those arrive consistent with each other. **A poll that keeps running against
+  a completed session is the failure mode to design against**, so the stop condition is
+  the part to get right.
+- **Five seconds, because that is the worker's own tick.** `PIPELINE_POLL_INTERVAL_MS`
+  defaults to 5000 ([worker.js](worker.js):10); polling faster asks the database for
+  changes that cannot have happened yet. The browser interval should be derived from the
+  same number rather than independently hard-coded to the same value by coincidence.
+- **A visible polling indicator, next to the status line.** The user should be able to
+  tell "Apex is watching this" from "this page is stale and nobody is watching" without
+  guessing, since those two look identical today. It lives with
+  `.pipeline-status` ([style.css](public/css/style.css):403), states when it last
+  checked, and — this is the part that makes it worth having — **it must change when
+  polling stops.** A failed fetch, exhausted retries, or a hidden tab all turn it into a
+  plain "not updating — refresh" rather than leaving an animation running over data that
+  is no longer being refreshed. An indicator that cannot report its own failure is worse
+  than none, because it converts a stale page into a stale page the user trusts.
+  Honour `prefers-reduced-motion` — the stylesheet currently has no animation at all, so
+  this is where that convention gets set.
+- **Elapsed time on `queued` and `running`.** The page says "waiting for the worker to
+  pick this up" with no way to tell ten seconds from forty minutes. `sessions.approved_at`
+  and `pipeline_runs.created_at` are both already stored; showing the elapsed figure is
+  what separates "normal" from "something is wrong" for a user who has no other signal.
+- **A stall threshold, stated on the page.** If `worker.js` is not running, a session sits
+  in `queued` for ever and today that is indistinguishable from healthy — **and polling
+  makes it worse, not better, because a live indicator ticking over an unchanging status
+  reads as progress.** Past a threshold the page says the run has not advanced and that
+  an administrator should check the worker. The poller is what makes this detectable;
+  this bullet is what keeps it from being actively misleading.
+- **The server-rendered page stays correct on its own.** Everything above is an
+  enhancement over a page that is already right at render time and right again after a
+  refresh. With JavaScript blocked or broken the user loses the live updates and nothing
+  else, which is how the rest of the app already behaves.
+- **No new data model.** One read-only route, one static script, one indicator, and two
+  timestamps that are already in the database.
+
+**Not in this phase: live log tailing.** `build_log` and `test_log` are written once, at
+terminal success or failure ([pipelineRunner.js](app/lib/pipeline/pipelineRunner.js):81
+and :87), so for the whole time a run is in flight there is nothing to stream — a log
+pane fed by this poller would sit empty until the moment the page reloads anyway.
+Streaming would mean incremental writes out of `dockerRunner`, with its own buffering,
+truncation and retention questions, and it is a larger piece of work than this entire
+phase. The stepper advances live; the logs arrive at the end.
+
+### Done when
+
+A user who approves an implementation watches the sub-stepper move through clone,
+codegen, build, test and push without touching the keyboard; the page tells them it is
+watching and when it last checked; the page reloads itself once when the run finishes, so
+the logs and the failure actions appear; a run that stops advancing is called out instead
+of being animated over; and a user with JavaScript disabled sees exactly the page they
+see today.
+
+### Also on this page, not in this phase
+
+Found alongside the above and worth their own small phase rather than being folded into
+this one:
+
+- The build and test logs are collapsed `<details>` containing a `<pre>`
+  ([branch.ejs](views/branch.ejs):147). On a failure the one thing the user needs is the
+  tail of the test log, and it costs two clicks and a scroll. A failure should open the
+  relevant log expanded and scrolled to the end.
+- Resume, Retry and the destructive Clear sit in one undifferentiated row
+  ([branch.ejs](views/branch.ejs):157). This is the same visual-separation argument
+  Phase 28 made for `/admin/repos`; the `danger-button` class on its own is not the
+  separation.
+- The clarification conversation has no timestamps and does not scroll to the newest
+  message, so a long loop lands the user at the top every time.
+- `POST /repos/:id/branches/:id/document-run` blocks the request for about a minute
+  ([repos.js](app/routes/repos.js):485) with no feedback at all — the same "is this
+  working?" gap as the pipeline, in a place this phase's poller does not reach.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
