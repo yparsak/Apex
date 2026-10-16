@@ -3118,6 +3118,151 @@ already-Disabled repos got the already-frozen wording and the read_only one got
 longer exists", and setting a repo alphabetically first to `disabled` moved it below the
 other two while leaving their order intact.
 
+## Phase 29 — The lock holder can release their own pipeline lock
+
+The branch page tells a user "You hold the pipeline lock for this CO on this repo"
+([branch.ejs](views/branch.ejs):24) and then offers them no way to let go of it. Every
+release path that exists today belongs to someone or something else: `releaseLock` on a
+successful pipeline ([pipelineRunner.js](app/lib/pipeline/pipelineRunner.js):192), the
+`/clear` route, which only accepts a `failed` session and immediately re-acquires the
+lock for the replacement session ([repos.js](app/routes/repos.js):670), and the admin
+override `POST /admin/locks/:id/force-unlock`
+([locks.js](app/routes/admin/locks.js):19). So a user who holds a lock on a session they
+have simply decided not to pursue — a draft with requirements they no longer want, a
+session left `awaiting_approval` over a weekend — cannot free the `(repo, CO)` slot for a
+colleague without finding an admin. **That is an admin escalation for a situation the
+holder is the right person to resolve, and this phase gives the holder the action.**
+
+- **A release action on the branch page, visible only to the lock holder.** The page
+  already computes `lockHeld` ([repos.js](app/routes/repos.js):380); the control hangs off
+  that same condition, next to the "You hold the pipeline lock" line that today states a
+  fact with nothing to do about it. A user who does not hold the lock sees what they see
+  now.
+- **It is the abandon verb, not the clear verb.** `/clear` exists to *keep working* on the
+  branch — it releases and re-acquires, so the user ends up holding the lock again with a
+  fresh session. This one ends with the slot free and the user holding nothing. Both can
+  live on a failed session's page and they must not read as the same button.
+- **It is refused while a run is actually in flight.** A session that is `queued` or
+  running is being worked on by the worker, and releasing the slot under it would let a
+  second session start a pipeline against the same CO on the same repo — the exact
+  collision the lock exists to prevent. The eligible states are the ones where nothing is
+  executing: `awaiting_approval`, `failed`, and a session still gathering requirements.
+  The refusal says which state it is in, in the same place
+  `renderBranchPage(..., error)` already puts refusals.
+- **The released session's own status is left untouched.** Same precedent as Phase 11's
+  force-unlock and Phase 13's `/clear`: this frees the `(repo, CO)` slot and nothing else.
+  The session stays readable as the record of what happened, and stops being actionable
+  because the lock it needed is gone.
+- **A re-acquire is an ordinary acquire.** Nothing reserves the slot for the user who let
+  it go. If they change their mind and the slot is still free, starting again takes it
+  back through `acquireLock` like any other session; if a colleague took it first, they
+  get the normal "locked by another in-progress session" banner. **Releasing is a
+  one-way action from the holder's point of view, and the confirm should say so.**
+- **Audited as a user action, not an admin one.** `auditLog.logAction` with the session id
+  and the releasing user, alongside `session_cleared` and `pipeline_retried` — the
+  admin audit trail (`logAdminAction`) stays for the force-unlock override, so the two
+  remain distinguishable when a slot is later found empty.
+- **No new data model.** One route, one guarded button, one audit action. `releaseLock`
+  already takes `(repoId, coNumber, sessionId)` and already scopes the DELETE to the
+  holding session, which is exactly the authorization this needs.
+
+### Done when
+
+A user looking at a CO they hold but no longer intend to run can free it themselves and
+sees the banner flip to the not-held wording; a colleague can then start a session on
+that `(repo, CO)`; a user whose session is mid-pipeline is refused with the reason; and
+the admin force-unlock remains what it is today — the override for when the holder
+cannot act, not the only way the slot ever comes free.
+
+## Phase 30 — Written files are file bytes, not chat formatting
+
+A generated Python script landed with a markdown code fence as its first line instead of
+`#!/usr/bin/env python3`. **Nothing in the pipeline is wrong about the model's intent —
+the content is right, the framing came with it — and nothing anywhere strips that
+framing.** `WRITE_FILE` is parsed as
+`/^WRITE_FILE:\s*(\S+)\r?\n([\s\S]*)$/` ([codegenService.js](app/lib/pipeline/codegenService.js):381)
+and everything after the path line becomes the file, verbatim; the only normalization
+applied is trailing-whitespace trimming and a single terminating newline.
+`dockerRunner.writeFile` then pipes that straight into `cat >`
+([dockerRunner.js](app/lib/docker/dockerRunner.js):102). So a fenced payload is written
+exactly as sent, and the pipeline goes on to build, test and push a file whose first
+line is not code.
+
+Three things make this more than a one-off bad turn:
+
+- **The prompt never says not to.** Rule 5 says "then the COMPLETE new contents of that
+  file" ([codegenService.js](app/lib/pipeline/codegenService.js):77) — which a model
+  following chat convention satisfies by fencing the contents. The instruction has to
+  say that the bytes after the newline are the literal file, that the first character is
+  the file's first character, and that a fence or language tag would become part of the
+  file.
+- **Apex itself fences file content back at the model.** The anchor-mismatch refusal
+  quotes the real lines inside a fence
+  ([codegenService.js](app/lib/pipeline/codegenService.js):465) — the one place the
+  protocol wraps file bytes in markdown. That is defensible for a *display* of lines
+  with number prefixes, but it is also the in-context example of how file content gets
+  formatted, and it should carry an explicit note that the fence and the prefixes are
+  display only, the same way the EXPECTED guidance already does for the numbers.
+- **The damage outlives the one file.** A leading fence shifts every line in that file by
+  one, so the next `REPLACE_LINES` against it fails its EXPECTED check for reasons that
+  have nothing to do with what the model got wrong, and burns turns re-reading. Phase
+  21's whole point is that reads and writes share one coordinate system; a junk first
+  line quietly breaks that.
+
+What this phase does:
+
+- **Strip a whole-payload fence, server-side, in the write path.** It applies to the
+  `WRITE_FILE` body and to the `REPLACEMENT` section of a `REPLACE_LINES` directive, and
+  it fires only on the unambiguous case: the first line is nothing but a fence opener
+  (three or more backticks or tildes, with at most a language token after it) and the
+  last line is nothing but a matching closer. A stray fence in the middle, an unclosed
+  one, or any other shape is left alone — **a guess here would corrupt a file that was
+  fine, which is strictly worse than the bug being fixed.**
+- **Markdown files are exempt from the exemption-worthy case only when the fence is
+  balanced.** A `.md` file can legitimately begin and end with a fence. The rule above
+  already covers it: if the interior contains its own fence lines the payload is not an
+  unambiguously wrapped file, and nothing is stripped. This is called out because it is
+  the case that will be reported as a regression if it is handled by file extension
+  instead of by structure.
+- **The strip is reported, not silent.** The `Wrote <path>` confirmation that goes back as
+  the next turn says a wrapper was removed, so the model corrects the following file
+  rather than repeating it, and the step log records it. A silent fixer that runs on
+  every write is a fixer nobody notices has started firing on everything.
+- **A detectable-shape check, since this class of error is detectable.** A written file
+  whose first line is a fence, or whose content is wrapped, is a *shape* error — unlike a
+  logic bug, it can be checked without judgment. The strip is that check; what it cannot
+  repair it reports as a refusal turn, in the same style as Phase 19's write guard,
+  rather than writing something it is unsure about.
+- **Executable bit for a file written with a shebang.** `writeFile`'s `cat >` creates the
+  file 0644, so even a correct `#!/usr/bin/env python3` script is not executable when it
+  lands on the branch. If the written content's first line starts with `#!`, the file is
+  chmod +x. This is a second cause of the same complaint — "the generated script doesn't
+  run" — and fixing only the fence leaves it half solved.
+- **No new data model.** A parser change in the write path, a prompt clarification, one
+  extra `chmod` in `dockerRunner.writeFile`, and a line of log.
+
+**Not in this phase:** validating that generated code is syntactically valid in its
+language. That is a real idea and a much larger one (a per-language checker, in the
+sandbox, with its own failure semantics), and the build/test step is where it belongs if
+it is ever built. This phase is only about Apex writing down exactly what the model
+meant to write.
+
+### Done when
+
+A model that fences its `WRITE_FILE` payload still produces a clean file, and is told it
+happened; a generated script with a shebang arrives on the DEV branch with that shebang
+on line 1 and the executable bit set; a `.md` file whose own content contains fences is
+written untouched; and a payload whose fencing is ambiguous is refused rather than
+guessed at.
+
+### Note on diagnosis
+
+The codegen transcript is not persisted — `messages` lives only in `runCodegen`'s loop —
+so the only evidence of what a model actually emitted is the file it produced. That is
+not a blocker for this phase, which is reproducible from the parser alone, but it is why
+this had to be read backwards from the committed file, and it belongs with the
+observability work rather than here.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
