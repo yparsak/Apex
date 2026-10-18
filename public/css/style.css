@@ -17,6 +17,18 @@ body {
   color: white;
 }
 
+.topnav-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.topnav-logo {
+  height: 28px;
+  width: auto;
+  display: block;
+}
+
 .topnav-title {
   font-weight: 600;
   font-size: 1.1rem;
