@@ -44,6 +44,24 @@ about. Nobody asks for these and nobody waits on them; see
    `dev/**` branch — a GitHub App scoped to exactly that, with no merge authority at
    all.
 
+### One session at a time per Change Order — and the holder can hand it back
+
+Only one AI session can be in flight per `(repo, Change Order)`, across every user. The
+branch page tells you which side of that you are on, and when you are the holder it gives
+you a way out: **Release pipeline lock** frees the slot for everyone else on the repo.
+
+It is not the same button as "Clear & start new session" on a failed run. Clear is for
+carrying on — it hands you a fresh session and you still hold the slot. Release is for
+abandoning: a draft whose requirements you no longer want, a session left waiting for
+approval over a weekend. Afterwards you hold nothing, and nothing is reserved for you — if
+a colleague starts on that CO first, you wait like anyone else. The session itself stays
+exactly as it was and stays readable; only the slot moves.
+
+The one time it is refused is while the run is actually executing, because the worker is
+mid-pipeline and freeing the slot under it is the collision the lock exists to prevent.
+An admin force-unlock still exists for the case the holder genuinely cannot act — but it
+is no longer the only way a forgotten slot ever comes free.
+
 ## Generated documents
 
 Everything above is driven by an engineer at a keyboard. Apex's other half runs with

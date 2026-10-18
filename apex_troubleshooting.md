@@ -134,6 +134,16 @@ owner can't resume/retry it themselves (account disabled, gone, etc.), an admin 
 force-unlock it from that page — this only frees the lock slot; it does not touch the
 orphaned session's own `failed` status.
 
+Check first whether the holder can simply let go of it: since Phase 29 the branch page
+shows the holder a **Release pipeline lock** button next to "You hold the pipeline lock",
+and that is the normal way an abandoned slot comes free. It is hidden (and the route
+refuses) while the session is `queued` or `running`, because the worker is executing it —
+if that's the state, the run has to finish or fail first. Releasing frees the slot for
+anyone and reserves nothing: if a colleague acquires it next, the original holder gets the
+ordinary "locked by another in-progress session" banner. Holder releases are in
+`audit_log` as `pipeline_lock_released`; admin force-unlocks are in the admin audit trail,
+so an empty slot can be traced to whichever one freed it.
+
 ## The whole site shows "The site is under maintenance"
 
 Two different conditions produce that page, and the message tells you which:

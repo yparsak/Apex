@@ -421,6 +421,12 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     !!latestRun.container_id &&
     latestRun.resume_attempt_count < pipelineRunner.MAX_RESUME_ATTEMPTS;
 
+  // Phase 29: the holder may let go of the (repo, CO) slot themselves, but
+  // only while nothing is executing - see the /release-lock route below for
+  // why 'queued' and 'running' are excluded. Both the button and the route's
+  // refusal read the same constant, so the two cannot drift apart.
+  const eligibleForRelease = lockHeld && RELEASABLE_SESSION_STATUSES.includes(session.status);
+
   const topStepper = pipelineStepper.buildTopStepper(session, eligibleForApproval);
   const subStepper = pipelineStepper.buildSubStepper(session, latestRun);
 
@@ -439,6 +445,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     latestRun,
     eligibleForApproval,
     eligibleForResume,
+    eligibleForRelease,
     topStepper,
     subStepper,
     coSection,
@@ -675,6 +682,65 @@ router.post('/:repoId/branches/:branchId/clear', async (req, res) => {
     userId: req.session.user.id,
     action: 'session_cleared',
     detail: `started new session ${newSession.id}`,
+  });
+
+  res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);
+});
+
+// Release-my-own-lock (see ROADMAP.md Phase 29): the abandon verb, and
+// deliberately not /clear above. /clear exists to *keep working* on the branch
+// - it releases and immediately re-acquires for a fresh session, so the user
+// still holds the slot afterwards. This one ends with the (repo, CO) slot free
+// and the user holding nothing, so a colleague can take it without an admin
+// running the force-unlock override.
+//
+// Refused while anything is actually executing: a 'queued' or 'running'
+// session belongs to the worker, and freeing the slot under it would let a
+// second session start a pipeline against the same CO on the same repo - the
+// exact collision the lock exists to prevent.
+const RELEASABLE_SESSION_STATUSES = ['awaiting_approval', 'failed'];
+
+router.post('/:repoId/branches/:branchId/release-lock', async (req, res) => {
+  const access = await loadAccess(req, res, 'write');
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
+    access.repo.id,
+    branch.co_number,
+  ]);
+  if (!lock || lock.session_id !== session.id) {
+    return renderBranchPage(req, res, access, branch, session, 'You do not hold the pipeline lock for this CO.');
+  }
+
+  if (!RELEASABLE_SESSION_STATUSES.includes(session.status)) {
+    return renderBranchPage(
+      req,
+      res,
+      access,
+      branch,
+      session,
+      `This session is ${session.status} — a run is in flight, so the pipeline lock can't be released yet.`
+    );
+  }
+
+  // Scoped to the holding session by releaseLock's own WHERE clause, which is
+  // exactly the authorization this needs - no new data model, and the session's
+  // own status is left untouched (same precedent as Phase 11's force-unlock and
+  // Phase 13's /clear). It stays readable as the record of what happened and
+  // stops being actionable because the lock it needed is gone.
+  await lockService.releaseLock(access.repo.id, branch.co_number, session.id);
+  // logAction, not logAdminAction: this is the holder resolving their own
+  // situation, and the admin trail stays reserved for the force-unlock
+  // override so the two remain distinguishable when a slot is found empty.
+  await auditLog.logAction({
+    sessionId: session.id,
+    userId: req.session.user.id,
+    action: 'pipeline_lock_released',
+    detail: `CO ${branch.co_number}`,
   });
 
   res.redirect(`/repos/${access.repo.id}/branches/${branch.id}`);

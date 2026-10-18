@@ -36,10 +36,14 @@ async function acquireLock(repoId, coNumber, sessionId, userId) {
   }
 }
 
-// releaseLock(...) - only called on a session's successful pipeline
-// completion (see ROADMAP.md Phase 7). A failed session keeps the lock held,
-// same as its kept-alive container, until it succeeds or a later phase's
-// retry/abandon logic releases it.
+// releaseLock(...) - the DELETE is scoped to the holding session, so every
+// caller is implicitly authorized by the session it passes. Three call sites:
+// a session's successful pipeline completion (see ROADMAP.md Phase 7),
+// Phase 13's /clear, which releases and immediately re-acquires for the
+// replacement session, and Phase 29's /release-lock, where the holder
+// deliberately abandons the slot and takes nothing back. A failed session
+// otherwise keeps the lock held, same as its kept-alive container, until it
+// succeeds, is cleared, or is released.
 async function releaseLock(repoId, coNumber, sessionId) {
   await db.query('DELETE FROM pipeline_locks WHERE repo_id = ? AND co_number = ? AND session_id = ?', [
     repoId,

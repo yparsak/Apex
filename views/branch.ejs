@@ -22,6 +22,18 @@
 
     <% if (lockHeld) { %>
       <p class="lock-ok">You hold the pipeline lock for this CO on this repo.</p>
+      <%# Phase 29. The abandon verb, and not the same thing as "Clear & start
+          new session" further down a failed session's page: that one releases
+          and re-acquires so you keep the slot with a fresh session, this one
+          leaves the slot free and you holding nothing. Hidden while a run is in
+          flight (eligibleForRelease), and under read_only/disabled like every
+          other control here that changes something. %>
+      <% if (eligibleForRelease && repo.access_state === 'enabled') { %>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/release-lock" class="lock-release-form"
+          onsubmit="return confirm('Release the pipeline lock for CO <%= branch.co_number %>? This frees the slot for anyone on this repo and nothing holds it for you — if a colleague starts a session on this CO first, you will not be able to run this one until they finish. This session stays readable but stops being actionable.')">
+          <button type="submit" class="danger-button">Release pipeline lock</button>
+        </form>
+      <% } %>
     <% } else { %>
       <p class="lock-warn">This CO is currently locked by another in-progress session on this repo — a new AI run can't start until that finishes.</p>
     <% } %>

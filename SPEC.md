@@ -137,7 +137,11 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
 - `pipeline_locks` — one row per `(repo_id, co_number)`; its existence *is* the lock.
   Acquired at branch-creation/continue time, held for the session's entire lifetime
   (clone through push), released only on success. A failed session keeps the lock —
-  it's still retryable/resumable by its own owner.
+  it's still retryable/resumable by its own owner. Since Phase 29 the holder can also
+  release it deliberately from the branch page when they've decided not to pursue the
+  session at all, which is the abandon verb and the opposite of `/clear` (that one
+  re-acquires); it's refused while the session is `queued` or `running`, and the admin
+  force-unlock on `/admin/locks` stays the override for when the holder can't act.
 - `pipeline_runs` — one row per attempt. `stage` (`cloning`/`codegen`/`building`/
   `testing`/`pushing`) is updated live for the UI's progress stepper and persisted even
   on failure. `container_id` points at a failed attempt's kept-alive sandbox (cleared on

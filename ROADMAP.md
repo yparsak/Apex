@@ -3174,6 +3174,45 @@ that `(repo, CO)`; a user whose session is mid-pipeline is refused with the reas
 the admin force-unlock remains what it is today — the override for when the holder
 cannot act, not the only way the slot ever comes free.
 
+### Implementation notes
+
+Built as planned — one route, one guarded button, one audit action, no schema change.
+Five details, none of which was in the plan:
+
+- **`lockHeld` was not sufficient on its own.** The plan hangs the control off the same
+  condition the "You hold the pipeline lock" line uses, but `lockHeld` is true throughout
+  a `queued`/`running` session too — that is exactly when the worker owns the slot. So the
+  view reads a second flag, `eligibleForRelease = lockHeld && RELEASABLE_SESSION_STATUSES
+  .includes(session.status)` ([repos.js](app/routes/repos.js):428), and the route tests
+  the same constant ([repos.js](app/routes/repos.js):701). One list, two readers: the
+  hidden button and the refusal cannot drift into disagreeing about what is releasable.
+
+- **"A session still gathering requirements" needed no third state.** The plan lists it
+  alongside `awaiting_approval` and `failed` as if it were one, but a session that has
+  never been approved *is* `awaiting_approval` — that is the schema's default
+  ([schema.sql](db/schema.sql):155) and what `createSession` leaves behind. So the
+  constant has two entries, not three, and the pre-approval draft the plan cares about is
+  covered by the first of them.
+
+- **The route re-reads the lock instead of trusting the button.** It is the same
+  belt-and-braces the file already states at `loadAccess`: the hidden control saves a
+  wasted click, and the server-side check is what a stale tab or a back-button resubmit
+  hits. A POST from someone who is not the holder gets "You do not hold the pipeline lock
+  for this CO" rather than silently deleting nothing — `releaseLock`'s `AND session_id = ?`
+  would already make it a no-op, but a no-op that redirects looks like success.
+
+- **The refusal names the state, as the plan asks, by interpolating `session.status`
+  directly.** The two reachable values there are `queued` and `running`, both of which
+  read correctly in "This session is _ — a run is in flight". Writing the sentence against
+  the actual column rather than a mapping means a status added later still produces a
+  true refusal instead of a stale one.
+
+- **The confirm text carries the one-way warning, and the button is deliberately not
+  adjacent to Clear.** It sits by the lock line at the top of the page; Clear stays in the
+  failure-actions row far below. That is the plan's "they must not read as the same
+  button" done by distance rather than by wording alone — which also sidesteps the
+  undifferentiated-button-row problem Phase 31 already notes about that row.
+
 ## Phase 30 — Written files are file bytes, not chat formatting
 
 A generated Python script landed with a markdown code fence as its first line instead of
