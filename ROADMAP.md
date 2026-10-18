@@ -3294,6 +3294,61 @@ on line 1 and the executable bit set; a `.md` file whose own content contains fe
 written untouched; and a payload whose fencing is ambiguous is refused rather than
 guessed at.
 
+### Implementation notes
+
+Built as planned: one new pure module ([fencedPayload.js](app/lib/pipeline/fencedPayload.js)),
+both write verbs routed through it, two prompt rules clarified, one `chmod`. Seven
+details the plan did not settle:
+
+- **The plan's two outcomes are actually four, and the fourth is what protects markdown.**
+  "Strip it" and "refuse it" leave no room for "this is a document that contains fences",
+  which must be written *untouched* rather than refused — the plan asks for both
+  ("a `.md` file whose own content contains fences is written untouched" and "a payload
+  whose fencing is ambiguous is refused"), and one flag cannot carry both. So `classify`
+  returns `clean` / `wrapped` / `document` / `ambiguous`, and interior fence lines are
+  what separate the last two. `document` is written byte for byte; only `ambiguous` —
+  an opener with no matching closer and no interior fences to explain it — refuses.
+
+- **The strip happens before the trailing-newline normalization, not after.** `WRITE_FILE`
+  already trims trailing whitespace off the body and re-adds exactly one newline
+  ([codegenService.js](app/lib/pipeline/codegenService.js):397). Classifying the
+  *normalized* string would mean the closing fence is reliably the last line; classifying
+  after re-adding the newline would leave an empty last line and never match a closer.
+  The order is: trim → classify → strip → re-add the newline. Getting this backwards
+  silently disables the whole phase on every payload, which is why it is written down.
+
+- **The fence check runs before Phase 19's write guard.** Both refuse as a turn, so the
+  order only decides which reason the model is told. A fenced payload for a file the
+  model never read is wrong on both counts, and the fence is the one it can fix without
+  another fetch — so that refusal goes first.
+
+- **`REPLACE_LINES` checks the REPLACEMENT section inside `parseDirective`, not at apply
+  time.** It is a parse-level fact about the directive, and `parseDirective` already owns
+  the three-way "not a directive / malformed / parsed" return that keeps a malformed
+  directive from being answered with "unrecognized response". A stripped replacement sets
+  `replacementStripped` on the parsed directive, which `applyRangedWrite` reads for the
+  reply text and the log line — the strip is reported on the *applied* turn, so it cannot
+  be reported for a write that then failed its anchor check.
+
+- **Blank lines before the opener are skipped.** A payload of `"\n```python\n…\n```"` is
+  just as unambiguously wrapped as one without the blank line, and a model that puts a
+  blank line after the `WRITE_FILE:` line is common enough that reading the strict rule
+  literally here would leave the original bug in place for that shape. The blanks are
+  dropped with the wrapper. Nothing *after* the opener is skipped — that is file content,
+  blank or not.
+
+- **Refusal reasons are phrased as predicates** ("opens with a code fence that is never
+  closed") so the two callers can supply their own subject — "the payload …" for a whole-
+  file write, "the REPLACEMENT section …" for a ranged one. One reason string, two
+  grammatically correct sentences.
+
+- **`chmod +x` lives in `dockerRunner.writeFile`, so it covers both write verbs rather
+  than just `WRITE_FILE`.** It is keyed on the content's `#!` prefix and nothing else: a
+  failed chmod throws like a failed write, because a script that half-landed is worse than
+  a step failure. Note the ranged-write path gets this for free — a `REPLACE_LINES` that
+  edits line 1 of a script to add a shebang also makes it executable.
+
+
 ### Note on diagnosis
 
 The codegen transcript is not persisted — `messages` lives only in `runCodegen`'s loop —

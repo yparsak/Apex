@@ -298,6 +298,16 @@ Full DDL in [db/schema.sql](db/schema.sql). Grouped by concern:
        model saw those lines, which is why a ranged write is safe on a file far too
        large to read whole.
 
+     Both verbs treat their payload as **file bytes, not chat formatting**: a payload
+     that is wholly wrapped in a markdown code fence (first line nothing but a fence
+     opener, last line its matching closer, no fence lines between) has those two lines
+     removed before the write, and the model is told it happened. Any other fence shape
+     is either left strictly alone — a payload whose interior carries its own fences is
+     a document that legitimately contains them, `.md` or not — or refused as a turn.
+     **Nothing is unwrapped by guessing**; stripping a wrapper off a file that was never
+     wrapped would corrupt a file that was fine. A file written with a `#!` first line is
+     also made executable, so a generated script lands on the branch runnable.
+
      A write that fails either test is refused back to the model as a turn it can act
      on. The guarantee is unchanged and absolute: **no codegen run silently deletes or
      overwrites code the model never read** — a refusal, or a failed codegen stage, is

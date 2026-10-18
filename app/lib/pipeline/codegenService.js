@@ -30,6 +30,7 @@ const repoClarificationInstructions = require('../repoClarificationInstructions'
 const repoContext = require('../repoContext');
 const structuralIndex = require('../structuralIndex');
 const rangedWrite = require('./rangedWrite');
+const fencedPayload = require('./fencedPayload');
 const { processLogger } = require('../logger');
 
 const MAX_TURNS = 40;
@@ -68,6 +69,8 @@ const SYSTEM_PROMPT = [
   '       --- REPLACEMENT',
   '       <what those lines should become; leave this section empty to delete them>',
   '       --- END',
+  '   The REPLACEMENT section is spliced into the file byte for byte - do not wrap it in a',
+  '   markdown code fence.',
   '   The EXPECTED text is checked against the file before anything is written. If it does',
   '   not match, nothing is written and you are told what is actually there. Do not include',
   '   the line-number prefixes Apex adds when displaying a range - they are not in the file.',
@@ -77,6 +80,11 @@ const SYSTEM_PROMPT = [
   '5. Replace a whole file: a single line `WRITE_FILE: <path>`, then a newline, then the',
   "   COMPLETE new contents of that file (this replaces the file's entire contents). <path>",
   '   must be relative to the repo root, with no leading `/` and no `..` segment.',
+  '   Everything after that newline is written to the file literally, byte for byte: the first',
+  "   character after it is the file's first character. Do NOT wrap the contents in a markdown",
+  '   code fence - ``` or ~~~, with or without a language tag, would be written into the file as',
+  "   its first and last lines. A script's shebang must therefore be line 1 of the payload.",
+  '   (A file written with a `#!` first line is made executable automatically.)',
   '6. Finish: once every requirement below is fully implemented, write `DONE` and nothing else.',
   '',
   'WRITE_FILE replaces everything, so it is only accepted for a file you have fully seen:',
@@ -372,7 +380,7 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
     if (directive) {
       messages.push({
         role: 'user',
-        content: await applyRangedWrite({ containerId, repoRoot, directive, written, reads, edited }),
+        content: await applyRangedWrite({ containerId, repoRoot, directive, written, reads, edited, log }),
       });
       continue;
     }
@@ -387,11 +395,23 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
       // terminating newline is what git, every linter, and the ranged-write
       // path all assume. An empty file stays genuinely empty.
       const body = writeMatch[2].replace(/[ \t\r\n]+$/, '');
-      const content = body === '' ? '' : `${body}\n`;
       if (isUnsafePath(path)) {
         messages.push({ role: 'user', content: unsafePathReply(path) });
         continue;
       }
+      // Phase 30: the payload is file bytes, and a chat code fence around them
+      // is not file bytes. Classified before the write-guard check so a
+      // refusal names the thing that is actually wrong with the turn, and
+      // before the trailing newline is re-added so the closer is genuinely the
+      // last line.
+      const fence = fencedPayload.classify(body);
+      if (fence.kind === 'ambiguous') {
+        messages.push({ role: 'user', content: fenceRefusalReply(path, fence.reason) });
+        continue;
+      }
+      const stripped = fence.kind === 'wrapped';
+      const payload = stripped ? fence.content : body;
+      const content = payload === '' ? '' : `${payload}\n`;
       // Same shape as the unsafe-path refusal above: fed back as a turn the
       // model can act on, not a pipeline failure, so it can route around the
       // file or finish without it (see ROADMAP.md Phase 19).
@@ -405,7 +425,20 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
       // A whole-file write is also a complete read of what the file now says,
       // so the guard needs no re-fetch before the next one.
       reads.set(path, repoContext.recordFromText(content));
-      messages.push({ role: 'user', content: `Wrote ${path} (${rangedWrite.splitLines(content).lines.length} lines).` });
+      if (stripped) log.info({ path, info: fence.info || null }, 'stripped a whole-payload code fence from a WRITE_FILE body');
+      messages.push({
+        role: 'user',
+        content: [
+          `Wrote ${path} (${rangedWrite.splitLines(content).lines.length} lines).`,
+          // Reported rather than silently fixed: a fixer nobody is told about
+          // is a fixer nobody notices has started firing on everything, and
+          // the model needs to know so the *next* file arrives unwrapped
+          // instead of needing the same repair.
+          stripped
+            ? 'Note: your payload was wrapped in a markdown code fence, and Apex removed the opening and closing fence lines before writing. The file contents are what was inside them. Send file contents as raw bytes with no fence - the first character after the WRITE_FILE line is the file\'s first character.'
+            : null,
+        ].filter(Boolean).join('\n'),
+      });
       continue;
     }
 
@@ -426,6 +459,21 @@ function unsafePathReply(path) {
   return `Refusing "${path}" - the path must be relative to the repo root, with no leading "/" and no ".." segment.`;
 }
 
+// Phase 30's refusal: the payload is shaped like chat formatting rather than
+// file bytes, in a way Apex will not unwrap by guessing. Same style as Phase
+// 19's write guard - a turn the model can act on, stating exactly what was
+// wrong and what to send instead - because a shape error is the one class of
+// mistake that can be named precisely without judgment.
+function fenceRefusalReply(path, reason) {
+  return [
+    `Refusing to write ${path} - the payload ${reason}. Nothing was written.`,
+    'The contents you send are written to the file byte for byte: the first character after',
+    'the `WRITE_FILE: <path>` line is the first character of the file. A markdown code fence',
+    '(```` ``` ```` or `~~~`), with or without a language tag, would become part of the file,',
+    'so do not wrap the contents in one. Send the same file again as raw contents.',
+  ].join('\n');
+}
+
 // applyRangedWrite(...) -> the user-turn text to feed back, applied or
 // refused. Read-modify-write on the host: the container hands over the whole
 // file, the splice happens here, and the result goes back through the same
@@ -435,7 +483,7 @@ function unsafePathReply(path) {
 // pipe - and host-side splicing means the verification and the write see the
 // identical copy of the file, with no in-container editing tool to get the
 // offsets wrong.
-async function applyRangedWrite({ containerId, repoRoot, directive, written, reads, edited }) {
+async function applyRangedWrite({ containerId, repoRoot, directive, written, reads, edited, log }) {
   if (directive.error) return directive.error;
 
   const { path } = directive;
@@ -466,7 +514,8 @@ async function applyRangedWrite({ containerId, repoRoot, directive, written, rea
         applied.actualLines.map((line, i) => `${directive.start + i}\t${line}`).join('\n'),
         '```',
         'Re-read the region you mean to change and try again with the real text in EXPECTED.',
-        'Note the line-number prefixes above are display only - do not put them in EXPECTED.'
+        'Note the code fence and the line-number prefixes above are display only - neither is in',
+        'the file, and neither belongs in EXPECTED or in any content you send.'
       );
     } else {
       lines.push(`Read it first with \`FETCH_RANGE: ${path}:1-${Math.min(applied.totalLines, repoContext.MAX_RANGE_LINES)}\`.`);
@@ -483,12 +532,20 @@ async function applyRangedWrite({ containerId, repoRoot, directive, written, rea
   if (written.has(path)) written.set(path, applied.content);
   else reads.delete(path);
 
+  if (directive.replacementStripped) {
+    log.info({ path }, 'stripped a whole-payload code fence from a REPLACE_LINES replacement');
+  }
+
   const delta = applied.lineDelta === 0 ? 'no change in length' : `${applied.lineDelta > 0 ? '+' : ''}${applied.lineDelta} lines`;
   return [
     `Applied: ${path} lines ${directive.start}-${directive.end} replaced (${delta}).`,
+    // Reported, not silent - same reason as the whole-file path (Phase 30).
+    directive.replacementStripped
+      ? 'Note: your REPLACEMENT section was wrapped in a markdown code fence, and Apex removed the opening and closing fence lines before splicing it in. Send replacement lines as raw file bytes, with no fence around them.'
+      : null,
     `The file is now ${applied.totalLines} lines. Every line after ${directive.start} has shifted - if you`,
     'are making further edits to this file, re-read the region first or work bottom-up.',
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 module.exports = { runCodegen, MAX_CONTAINER_FILE_BYTES };

@@ -288,6 +288,40 @@ truth in front of it. A *loop* means something systematic. In order of likelihoo
 Nothing is written on a refusal, so a loop wastes turns but cannot corrupt the tree. The
 session is safe to retry.
 
+**A generated file starts with ```` ``` ```` or ```` ```python ````, or the model is told
+"Refusing to write <path> - the payload opens with a code fence that is never closed".**
+Since Phase 30 the write path treats a `WRITE_FILE` body and a `REPLACE_LINES`
+REPLACEMENT section as file bytes and removes a *whole-payload* markdown fence before
+writing. Three outcomes, and which one you got is in the worker log and in the turn fed
+back to the model:
+
+1. **Stripped.** First line is nothing but a fence opener, last line its matching closer,
+   no fence line between them. The two lines are removed, the log records `stripped a
+   whole-payload code fence from a WRITE_FILE body` (or `... from a REPLACE_LINES
+   replacement`), and the `Wrote <path>` reply tells the model so it does not repeat it
+   on the next file.
+2. **Refused.** A fence opener on line 1 that is never closed, or closed by a fence that
+   does not match it. Nothing is written and the model gets a turn saying exactly that.
+   This is deliberate: **an ambiguous wrapper is not guessed at**, because unwrapping a
+   payload that was never wrapped corrupts a file that was fine.
+3. **Left alone.** Anything else, including a payload whose interior contains fence lines
+   of its own — that is a document that legitimately contains fences, and it is written
+   byte for byte. Note this is decided by *structure*, not by file extension: a fenced
+   `.md` is protected by its interior fences, not by its name.
+
+If a committed file really does begin with a stray fence, it was case 3: the payload was
+not an unambiguously wrapped file. Do not widen the rule to catch it — the cost of a
+false positive here is a corrupted source file on a DEV branch. Check the prompt rules
+instead (codegen's rules 4 and 5 both state that the payload is written literally).
+
+**A generated script is on the DEV branch with a correct shebang but is not executable.**
+Shouldn't happen since Phase 30: `dockerRunner.writeFile` chmods +x any file whose
+content begins with `#!`, and git records the bit. If it does happen, the first line is
+not actually a shebang — check for a stripped-but-not-removed fence, a BOM, or leading
+blank lines (the payload's leading whitespace is trimmed, so a blank first line is not
+the cause). A file that should be executable but has no shebang is out of scope by
+design: nothing else is inferred.
+
 **Codegen runs without outlines: worker log shows "structural index unavailable -
 codegen continues without outlines".**
 **Not a pipeline failure** — it is logged at `warn` and the run continues. The

@@ -99,12 +99,25 @@ function exec(containerId, argv, { input, timeoutMs } = {}) {
 // writeFile(containerId, path, content) - creates parent directories as
 // needed. Content is streamed over stdin rather than embedded in an argv
 // string, so it isn't subject to shell-escaping or ARG_MAX limits.
+//
+// Phase 30: a file whose content begins with `#!` is also chmod +x. `cat >`
+// creates a file 0644, so a generated script arrived on the DEV branch
+// correct in every respect except that it could not be run - and git records
+// the executable bit, so the mode this sets is the mode the engineer gets.
+// The shebang is the file's own statement that it is meant to be executed;
+// nothing else is inferred, and a file without one keeps the default mode.
 async function writeFile(containerId, path, content) {
   const result = await exec(containerId, ['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', '_', path], {
     input: content,
   });
   if (result.code !== 0) {
     throw new Error(`Failed to write ${path} inside sandbox container: ${result.stderr.trim()}`);
+  }
+  if (typeof content === 'string' && content.startsWith('#!')) {
+    const chmod = await exec(containerId, ['chmod', '+x', path]);
+    if (chmod.code !== 0) {
+      throw new Error(`Failed to make ${path} executable inside sandbox container: ${chmod.stderr.trim()}`);
+    }
   }
 }
 

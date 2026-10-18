@@ -27,6 +27,7 @@
 // Everything here is pure: parse text, splice strings. The container I/O lives
 // in codegenService, which is also where the refusals are fed back as turns.
 const repoContext = require('../repoContext');
+const fencedPayload = require('./fencedPayload');
 
 // The line model is repoContext's, not this module's. It was this module's
 // first, and that was a latent bug of exactly the kind this phase is about:
@@ -125,7 +126,26 @@ function parseDirective(reply) {
   }
 
   const expectedLines = expectedRaw.split('\n');
-  const replacementLines = replacementRaw === '' ? [] : replacementRaw.split('\n');
+
+  // Phase 30: the REPLACEMENT section is file bytes too, and the same chat
+  // fence shows up around it for the same reason. It matters more here than in
+  // a whole-file write, not less: a fence spliced into the middle of a file
+  // leaves no obviously broken first line to notice, and every subsequent
+  // anchor against that file is now off by two.
+  const replacementFence = fencedPayload.classify(replacementRaw);
+  if (replacementFence.kind === 'ambiguous') {
+    return {
+      error: [
+        `Refusing this REPLACE_LINES - the REPLACEMENT section ${replacementFence.reason}. Nothing was written.`,
+        'The REPLACEMENT section is written into the file byte for byte, so a markdown code',
+        'fence would become lines of the file. Send the replacement lines on their own, with no',
+        'fence around them.',
+      ].join('\n'),
+    };
+  }
+  const replacementStripped = replacementFence.kind === 'wrapped';
+  const replacementText = replacementStripped ? replacementFence.content : replacementRaw;
+  const replacementLines = replacementText === '' ? [] : replacementText.split('\n');
 
   if (end - start + 1 > MAX_ANCHOR_LINES) {
     return {
@@ -149,7 +169,7 @@ function parseDirective(reply) {
     };
   }
 
-  return { path, start, end, expectedLines, replacementLines };
+  return { path, start, end, expectedLines, replacementLines, replacementStripped };
 }
 
 // applyDirective(content, directive) -> { ok: true, content, ... } or
