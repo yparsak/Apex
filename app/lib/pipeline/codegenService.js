@@ -91,6 +91,11 @@ const SYSTEM_PROMPT = [
   '   or required by other code takes no shebang.',
   '   (A file written with a `#!` first line is made executable automatically.)',
   '6. Finish: once every requirement below is fully implemented, write `DONE` and nothing else.',
+  '   `DONE` must be the whole turn. Do NOT append it to a WRITE_FILE payload or after a',
+  '   REPLACE_LINES directive: a payload is file bytes like everything else there, so Apex',
+  '   removes a trailing `DONE` line rather than writing it into the file, tells you it did,',
+  '   and does not treat it as finishing. Write the last file, then send `DONE` as its own',
+  '   turn.',
   '',
   'WRITE_FILE replaces everything, so it is only accepted for a file you have fully seen:',
   'one you fetched and were shown in its entirety, one you wrote in full earlier this',
@@ -404,18 +409,28 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
         messages.push({ role: 'user', content: unsafePathReply(path) });
         continue;
       }
+      // A `DONE` glued onto the end of the payload is the finish directive, not
+      // the file's last line. Stripped before the fence classifier runs,
+      // because a payload that is fenced *and* signs off puts the closing fence
+      // in the interior - which reads as a document rather than a wrapped file,
+      // so both the fence and the DONE would be written in.
+      const finish = splitTrailingFinish(body);
+      if (finish.empty) {
+        messages.push({ role: 'user', content: emptyFinishPayloadReply(path) });
+        continue;
+      }
       // Phase 30: the payload is file bytes, and a chat code fence around them
       // is not file bytes. Classified before the write-guard check so a
       // refusal names the thing that is actually wrong with the turn, and
       // before the trailing newline is re-added so the closer is genuinely the
       // last line.
-      const fence = fencedPayload.classify(body);
+      const fence = fencedPayload.classify(finish.body);
       if (fence.kind === 'ambiguous') {
         messages.push({ role: 'user', content: fenceRefusalReply(path, fence.reason) });
         continue;
       }
       const stripped = fence.kind === 'wrapped';
-      const payload = stripped ? fence.content : body;
+      const payload = stripped ? fence.content : finish.body;
       const content = payload === '' ? '' : `${payload}\n`;
       // Same shape as the unsafe-path refusal above: fed back as a turn the
       // model can act on, not a pipeline failure, so it can route around the
@@ -431,6 +446,7 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
       // so the guard needs no re-fetch before the next one.
       reads.set(path, repoContext.recordFromText(content));
       if (stripped) log.info({ path, info: fence.info || null }, 'stripped a whole-payload code fence from a WRITE_FILE body');
+      if (finish.appended) log.info({ path }, 'stripped a trailing DONE directive from a WRITE_FILE body');
       const shebangNote = missingShebangNote(path, content);
       if (shebangNote) log.info({ path }, 'wrote a file that looks runnable but has no shebang');
       messages.push({
@@ -444,6 +460,14 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
           // do is say the executable bit was not set and why, on the turn where
           // a one-line REPLACE_LINES still fixes it cheaply.
           shebangNote,
+          // The strip is stated, and the finish is deliberately *not* acted on.
+          // A DONE that arrived as the tail of a payload is the one copy of that
+          // directive Apex cannot trust - it is equally the shape of a file that
+          // ends with the word - so it buys a cheap confirming turn rather than
+          // ending codegen on it.
+          finish.appended
+            ? 'Note: your payload ended with a `DONE` line, which Apex removed before writing - everything after the WRITE_FILE line is file bytes, so it would have become the file\'s last line. The file is what came before it. If the work is complete, send `DONE` on its own now; if that line really belongs in the file, add it with a REPLACE_LINES edit.'
+            : null,
           // Reported rather than silently fixed: a fixer nobody is told about
           // is a fixer nobody notices has started firing on everything, and
           // the model needs to know so the *next* file arrives unwrapped
@@ -471,6 +495,54 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
 
 function unsafePathReply(path) {
   return `Refusing "${path}" - the path must be relative to the repo root, with no leading "/" and no ".." segment.`;
+}
+
+// A write turn with the finish directive appended to it. `reply === 'DONE'`
+// above is an exact match on the whole turn, and WRITE_FILE's body runs to the
+// end of the reply, so a model that writes its last file and signs off in one
+// turn gets `DONE` written in as the file's last line - a generated script
+// whose final statement is a bare word. The content is right, the protocol
+// slip is at the very end of it, and nothing noticed.
+//
+// **Stripped rather than refused, on the same grounds Phase 30 strips a fence:
+// the payload's intent is not in doubt, only its framing.** A model that signs
+// off in its last write turn has sent a complete, correct file plus one line
+// that belongs to the protocol rather than to the file, and refusing the turn
+// would buy nothing but a re-send of the whole payload. The one thing not
+// inferred is the finish itself: the caller writes the file, says the line was
+// removed, and waits for `DONE` as a turn of its own, because a directive that
+// arrived as file bytes is the one copy of it Apex has no reason to trust.
+//
+// Only the literal `DONE` is recognized. The other directives all carry a path
+// or a range, so a bare trailing one is far less likely than this - and every
+// extra pattern here is another way to cut a line off a file that was fine.
+//
+// Returns { body, appended, empty }: `body` with the directive removed,
+// whether there was one, and whether removing it left nothing to write (a turn
+// whose entire payload was `DONE`, which is a write of an empty file by
+// accident rather than on purpose).
+function splitTrailingFinish(body) {
+  if (body !== 'DONE' && !body.endsWith('\nDONE')) return { body, appended: false, empty: false };
+
+  // Right-trimmed again after the cut: the blank line a model leaves between
+  // the file's last line and its sign-off is part of the sign-off, not of the
+  // file. The caller re-adds exactly one terminating newline, as always.
+  const remainder = body.slice(0, -'DONE'.length).replace(/[ \t\r\n]+$/, '');
+  return { body: remainder, appended: true, empty: remainder === '' };
+}
+
+// The degenerate case of the above: `WRITE_FILE: <path>` with nothing after it
+// but `DONE`. Writing an empty file and then reporting the strip would be
+// technically consistent and useless - an empty file nobody asked for, plus a
+// note about why. Treated as the two directives it is, with neither acted on.
+function emptyFinishPayloadReply(path) {
+  return [
+    `Nothing was written for ${path} - the payload was only a \`DONE\` line, with no file`,
+    'contents before it. Everything after the `WRITE_FILE: <path>` line is file bytes, and',
+    '`DONE` must be a turn of its own.',
+    `Send \`WRITE_FILE: ${path}\` again with the file's contents, or send \`DONE\` alone if the`,
+    'work is already complete.',
+  ].join('\n');
 }
 
 // A written file that reads as runnable but carries no shebang. This is the
@@ -581,6 +653,9 @@ async function applyRangedWrite({ containerId, repoRoot, directive, written, rea
   if (directive.replacementStripped) {
     log.info({ path }, 'stripped a whole-payload code fence from a REPLACE_LINES replacement');
   }
+  if (directive.finishStripped) {
+    log.info({ path }, 'stripped a trailing DONE directive from a REPLACE_LINES turn');
+  }
 
   const delta = applied.lineDelta === 0 ? 'no change in length' : `${applied.lineDelta > 0 ? '+' : ''}${applied.lineDelta} lines`;
   return [
@@ -588,6 +663,12 @@ async function applyRangedWrite({ containerId, repoRoot, directive, written, rea
     // Reported, not silent - same reason as the whole-file path (Phase 30).
     directive.replacementStripped
       ? 'Note: your REPLACEMENT section was wrapped in a markdown code fence, and Apex removed the opening and closing fence lines before splicing it in. Send replacement lines as raw file bytes, with no fence around them.'
+      : null,
+    // Same treatment as the whole-file path: the strip is stated and the finish
+    // is not acted on, so ending codegen always rests on a turn that is only
+    // the directive.
+    directive.finishStripped
+      ? 'Note: your directive was followed by a `DONE` line, which Apex removed - a directive ends at its `--- END` line and `DONE` must be a turn of its own. The edit above was applied. If the work is complete, send `DONE` on its own now.'
       : null,
     `The file is now ${applied.totalLines} lines. Every line after ${directive.start} has shifted - if you`,
     'are making further edits to this file, re-read the region first or work bottom-up.',

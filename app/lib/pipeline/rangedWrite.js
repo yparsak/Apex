@@ -58,6 +58,22 @@ function normalizeAnchorLine(line) {
   return line.replace(/[ \t\r]+$/, '');
 }
 
+// splitTrailingFinish(body) -> { body, appended }. The `DONE` a model appends
+// when it finishes its last edit and signs off in the same turn, removed so the
+// directive behind it parses. Only the literal word, and only as the body's
+// last line: the sections' own markers are what this has to not disturb.
+// (codegenService does the equivalent for a whole-file payload, where the same
+// line would have been written into the file instead.)
+function splitTrailingFinish(body) {
+  const trimmed = body.replace(/[ \t\r\n]+$/, '');
+  if (trimmed !== 'DONE' && !trimmed.endsWith('\nDONE')) return { body, appended: false };
+
+  // Re-terminated with a single newline, which is the shape SECTIONS expects
+  // after `--- END` - the directive's own last line once the sign-off is gone.
+  const remainder = trimmed.slice(0, -'DONE'.length).replace(/[ \t\r\n]+$/, '');
+  return { body: remainder === '' ? '' : `${remainder}\n`, appended: true };
+}
+
 function anchorsMatch(actualLines, expectedLines) {
   if (actualLines.length !== expectedLines.length) return false;
   for (let i = 0; i < actualLines.length; i++) {
@@ -87,7 +103,14 @@ function parseDirective(reply) {
   }
 
   const [, path, startText, endText, body] = head;
-  const sections = body.match(SECTIONS);
+  // A turn that makes its last edit and signs off in one breath. `--- END` is
+  // anchored to the end of the body, so an appended `DONE` would otherwise fail
+  // the marker check and send the model a marker list it does not need - its
+  // markers were fine. Dropped here, and reported by the caller: unlike the
+  // whole-file path, nothing of the file is at stake, because this line lands
+  // after `--- END` rather than inside the REPLACEMENT section.
+  const finish = splitTrailingFinish(body);
+  const sections = finish.body.match(SECTIONS);
   if (!sections) {
     return {
       error: [
@@ -169,7 +192,15 @@ function parseDirective(reply) {
     };
   }
 
-  return { path, start, end, expectedLines, replacementLines, replacementStripped };
+  return {
+    path,
+    start,
+    end,
+    expectedLines,
+    replacementLines,
+    replacementStripped,
+    finishStripped: finish.appended,
+  };
 }
 
 // applyDirective(content, directive) -> { ok: true, content, ... } or
