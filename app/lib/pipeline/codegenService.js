@@ -84,6 +84,11 @@ const SYSTEM_PROMPT = [
   "   character after it is the file's first character. Do NOT wrap the contents in a markdown",
   '   code fence - ``` or ~~~, with or without a language tag, would be written into the file as',
   "   its first and last lines. A script's shebang must therefore be line 1 of the payload.",
+  '   A file meant to be run directly - a Python or shell script with an entry point, anything',
+  '   under a scripts/ or bin/ directory - MUST start with its shebang as that first line',
+  '   (`#!/usr/bin/env python3`, `#!/usr/bin/env bash`). Apex does not add one for you: a script',
+  '   written without it lands on the branch unrunnable. A file that is only imported, sourced',
+  '   or required by other code takes no shebang.',
   '   (A file written with a `#!` first line is made executable automatically.)',
   '6. Finish: once every requirement below is fully implemented, write `DONE` and nothing else.',
   '',
@@ -426,10 +431,19 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
       // so the guard needs no re-fetch before the next one.
       reads.set(path, repoContext.recordFromText(content));
       if (stripped) log.info({ path, info: fence.info || null }, 'stripped a whole-payload code fence from a WRITE_FILE body');
+      const shebangNote = missingShebangNote(path, content);
+      if (shebangNote) log.info({ path }, 'wrote a file that looks runnable but has no shebang');
       messages.push({
         role: 'user',
         content: [
           `Wrote ${path} (${rangedWrite.splitLines(content).lines.length} lines).`,
+          // Advisory, not a refusal: the file that was sent is a valid file and
+          // is now on disk exactly as sent. Apex will not insert a shebang -
+          // that is the guess Phase 30 refuses to make, since whether a module
+          // is run or imported is not something the bytes settle. What it can
+          // do is say the executable bit was not set and why, on the turn where
+          // a one-line REPLACE_LINES still fixes it cheaply.
+          shebangNote,
           // Reported rather than silently fixed: a fixer nobody is told about
           // is a fixer nobody notices has started firing on everything, and
           // the model needs to know so the *next* file arrives unwrapped
@@ -457,6 +471,38 @@ async function runCodegen({ containerId, org, repo, branch, repoRoot, requiremen
 
 function unsafePathReply(path) {
   return `Refusing "${path}" - the path must be relative to the repo root, with no leading "/" and no ".." segment.`;
+}
+
+// A written file that reads as runnable but carries no shebang. This is the
+// other half of the "the generated script doesn't run" complaint Phase 30
+// started on: the fence strip got the right bytes into the file, and the
+// chmod fires on `#!` - but a model that never emitted a shebang gets neither,
+// and nothing told it so.
+//
+// **This only ever reports; it never inserts.** Whether a `.py` file is a
+// program or a module is not a fact its bytes carry, and writing a shebang
+// into something that is imported is exactly the kind of guess that corrupts a
+// file that was fine. So the signal has to be something the file says about
+// itself: a Python entry-point guard, or a shell script's `.sh`/`.bash`
+// extension. Returns the note text, or null when there is nothing to say -
+// which is every file that already has a shebang, and every library module.
+const SHELL_SCRIPT_EXT = /\.(sh|bash)$/;
+const PY_ENTRY_POINT = /^if\s+__name__\s*==\s*['"]__main__['"]\s*:/m;
+
+function missingShebangNote(path, content) {
+  if (content.startsWith('#!')) return null;
+
+  const runnable = SHELL_SCRIPT_EXT.test(path) || (path.endsWith('.py') && PY_ENTRY_POINT.test(content));
+  if (!runnable) return null;
+
+  const suggested = path.endsWith('.py') ? '#!/usr/bin/env python3' : '#!/usr/bin/env bash';
+  return [
+    `Note: ${path} looks like a script meant to be run directly, but its first line is not a`,
+    `shebang, so Apex did not mark it executable - it will land on the branch unrunnable.`,
+    `If it is meant to be executed, add \`${suggested}\` as line 1 (\`REPLACE_LINES: ${path}:1-1\``,
+    'replacing line 1 with the shebang plus that line is enough). If it is only imported or',
+    'sourced by other code, leave it as it is.',
+  ].join('\n');
 }
 
 // Phase 30's refusal: the payload is shaped like chat formatting rather than
