@@ -2,6 +2,15 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute is how Phase 31's poller shows and hides the
+   sub-stepper and the stall note, and the browser's own `display: none` for
+   it loses to any `display` this stylesheet sets on the same element -
+   .stepper's `display: flex` being exactly that case. Stated once, globally,
+   rather than per element. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -435,6 +444,73 @@ body {
 
 .pipeline-failed {
   color: #b91c1c;
+}
+
+/* Phase 31: the live-poll indicator, the elapsed figure and the stall note
+   that sit with .pipeline-status. The three states are mutually exclusive and
+   the script sets exactly one of them, so a stopped poller can never be left
+   wearing the animated one. */
+.poll-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.poll-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex: none;
+}
+
+.poll-active .poll-dot {
+  background: #b45309;
+  animation: poll-pulse 1.6s ease-in-out infinite;
+}
+
+.poll-idle {
+  color: #6b7280;
+}
+
+.poll-error {
+  color: #b91c1c;
+}
+
+.poll-error .poll-dot {
+  background: #b91c1c;
+}
+
+@keyframes poll-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* First animation in this stylesheet, so this is where the convention gets
+   set: the dot still changes colour per state, it just stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  .poll-active .poll-dot {
+    animation: none;
+  }
+}
+
+.pipeline-elapsed {
+  margin: 0.25rem 0;
+  font-size: 0.85rem;
+  color: #4b5563;
+}
+
+.pipeline-stall {
+  max-width: 700px;
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid #b45309;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 0.85rem;
 }
 
 .pipeline-log {

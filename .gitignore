@@ -3,3 +3,4 @@
 *.pem
 logs/*
 !logs/.gitkeep
+.DS_Store

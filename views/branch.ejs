@@ -14,7 +14,11 @@
         hiding a repo. %>
     <%- include('partials/repo-state-banner', { repo: repo }) %>
 
-    <ol class="stepper">
+    <%# Phase 31: data-top-stepper / data-sub-stepper are the poller's write
+        targets (public/js/branch-poll.js). Both are fully rendered
+        server-side; the script only ever replaces their <li>s, so with
+        JavaScript off this is exactly the page it has always been. %>
+    <ol class="stepper" data-top-stepper>
       <% topStepper.forEach(function(s) { %>
         <li class="step step-<%= s.state %>"><%= s.label %></li>
       <% }) %>
@@ -139,18 +143,37 @@
 
     <% if (session.status !== 'awaiting_approval') { %>
       <h2>Pipeline</h2>
-      <p class="pipeline-status pipeline-<%= session.status %>">Status: <%= session.status %></p>
+      <p class="pipeline-status pipeline-<%= session.status %>" data-pipeline-status>Status: <%= session.status %></p>
+
+      <%# Phase 31. The indicator renders in its OFF state and the script
+          turns it on, never the other way round: with JavaScript blocked or
+          broken, a page that claims to be watching is worse than one that
+          admits it is a snapshot, because it turns a stale page into a stale
+          page the user trusts. %>
+      <% if (progress.live) { %>
+        <p class="poll-indicator poll-idle" data-poll-indicator aria-live="polite">
+          <span class="poll-dot" aria-hidden="true"></span>
+          <span data-poll-text>Live updates are off — refresh this page to see progress.</span>
+        </p>
+      <% } %>
+
+      <% if (progress.elapsedLabel) { %>
+        <p class="pipeline-elapsed" data-pipeline-elapsed><%= session.status === 'queued' ? 'Queued for' : 'Running for' %> <%= progress.elapsedLabel %></p>
+      <% } %>
+
+      <%# Rendered empty and hidden when nothing is stalled so the poller has
+          somewhere to put the message without building DOM. %>
+      <p class="pipeline-stall" data-pipeline-stall<% if (!progress.stallMessage) { %> hidden<% } %>><%= progress.stallMessage || '' %></p>
+
       <% if (session.status === 'queued') { %>
         <p class="placeholder">Approved — waiting for the worker to pick this up. Adding another requirement above will pull this back into review.</p>
       <% } %>
 
-      <% if (subStepper) { %>
-        <ol class="stepper substepper">
-          <% subStepper.forEach(function(s) { %>
-            <li class="step step-<%= s.state %>"><%= s.label %></li>
-          <% }) %>
-        </ol>
-      <% } %>
+      <ol class="stepper substepper" data-sub-stepper<% if (!subStepper) { %> hidden<% } %>>
+        <% (subStepper || []).forEach(function(s) { %>
+          <li class="step step-<%= s.state %>"><%= s.label %></li>
+        <% }) %>
+      </ol>
 
       <% if (latestRun) { %>
         <% if (latestRun.commit_sha) { %><p>Pushed commit: <code><%= latestRun.commit_sha %></code></p><% } %>
@@ -181,6 +204,18 @@
         </div>
         <% } %>
       <% } %>
+    <% } %>
+
+    <%# Phase 31. Loaded only while the rendered page is queued or running -
+        a poller has no reason to exist on a completed or failed page, and
+        not shipping it there is a stronger stop condition than any check
+        inside the script. The endpoint and the worker's own tick are handed
+        over as data attributes rather than being written into the script,
+        which stays a plain static file. %>
+    <% if (progress.live) { %>
+      <script src="/js/branch-poll.js"
+        data-status-url="/repos/<%= repo.id %>/branches/<%= branch.id %>/status"
+        data-poll-interval="<%= progress.pollIntervalMs %>" defer></script>
     <% } %>
   </main>
   <aside class="requirements-panel">

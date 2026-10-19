@@ -5,9 +5,12 @@ const appLock = require('./app/lib/appLock');
 const pipelineRunner = require('./app/lib/pipeline/pipelineRunner');
 const { initProcessLogger } = require('./app/lib/logger');
 const logRetention = require('./app/lib/logRetention');
+// One definition of the tick, shared with the branch page's poller (see
+// ROADMAP.md Phase 31) - the browser must not ask for changes faster than
+// this loop can make them.
+const { POLL_INTERVAL_MS } = require('./app/lib/pipelinePolling');
 
 const logger = initProcessLogger('worker');
-const POLL_INTERVAL_MS = Number(process.env.PIPELINE_POLL_INTERVAL_MS || 5000);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

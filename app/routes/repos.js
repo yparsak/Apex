@@ -9,6 +9,7 @@ const clarificationService = require('../lib/clarificationService');
 const auditLog = require('../lib/auditLog');
 const pipelineRunner = require('../lib/pipeline/pipelineRunner');
 const pipelineStepper = require('../lib/pipelineStepper');
+const pipelinePolling = require('../lib/pipelinePolling');
 const documentsService = require('../lib/documents/documentsService');
 const docDefinitions = require('../lib/documents/docDefinitions');
 const docRunService = require('../lib/documents/docRunService');
@@ -372,6 +373,27 @@ router.post('/:repoId/branches/:branchId/delete', async (req, res) => {
   res.redirect(`/repos/${access.repo.id}?tab=${branch.status === 'stale' ? 'stale' : 'active'}`);
 });
 
+// Eligible for the "Approve & Implement" gate once every requirement has
+// resolved out of pending_confirm and at least one is actually confirmed to
+// proceed (see ROADMAP.md Phase 8). Approval is never "locked in": a new
+// requirement finalized after approval drops the session back out of
+// 'queued' automatically (see clarificationService.js), so this condition
+// re-evaluates true again once that happens.
+//
+// Extracted from renderBranchPage for Phase 31's status endpoint, which needs
+// the same flag to feed the same pipelineStepper: two derivations of "which
+// step are we on" would drift, and the drift would show up as the stepper
+// disagreeing with itself across a refresh.
+function computeApprovalEligibility(session, lockHeld, requirements) {
+  const pendingRequirement = requirements.find((r) => r.confirm_status === 'pending_confirm') || null;
+  const hasConfirmedRequirement = requirements.some((r) => r.confirm_status === 'confirmed_proceed');
+  return {
+    pendingRequirement,
+    eligibleForApproval:
+      lockHeld && session.status === 'awaiting_approval' && !pendingRequirement && hasConfirmedRequirement,
+  };
+}
+
 async function renderBranchPage(req, res, access, branch, session, error) {
   const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
     access.repo.id,
@@ -390,7 +412,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     docRunService.listRunnableDocuments(access.repo),
   ]);
 
-  const pendingRequirement = requirements.find((r) => r.confirm_status === 'pending_confirm') || null;
+  const { pendingRequirement, eligibleForApproval } = computeApprovalEligibility(session, lockHeld, requirements);
   let overlapRequirement = null;
   if (pendingRequirement && pendingRequirement.overlap_flag_requirement_id) {
     const [[row]] = await db.query('SELECT id, requirement_text FROM session_requirements WHERE id = ?', [
@@ -398,16 +420,6 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     ]);
     overlapRequirement = row || null;
   }
-
-  // Eligible for the "Approve & Implement" gate once every requirement has
-  // resolved out of pending_confirm and at least one is actually confirmed to
-  // proceed (see ROADMAP.md Phase 8). Approval is never "locked in": a new
-  // requirement finalized after approval drops the session back out of
-  // 'queued' automatically (see clarificationService.js), so this condition
-  // re-evaluates true again once that happens.
-  const hasConfirmedRequirement = requirements.some((r) => r.confirm_status === 'confirmed_proceed');
-  const eligibleForApproval =
-    lockHeld && session.status === 'awaiting_approval' && !pendingRequirement && hasConfirmedRequirement;
 
   // Eligible for resume-from-failed-step (see ROADMAP.md Phase 9) only while
   // the failed attempt's container is still kept alive and hasn't already
@@ -429,6 +441,9 @@ async function renderBranchPage(req, res, access, branch, session, error) {
 
   const topStepper = pipelineStepper.buildTopStepper(session, eligibleForApproval);
   const subStepper = pipelineStepper.buildSubStepper(session, latestRun);
+  // Phase 31: the same view-model the /status endpoint returns, so the first
+  // paint and every poll after it are produced by one code path.
+  const progress = pipelinePolling.buildBranchStatus({ session, latestRun, eligibleForApproval });
 
   res.render('branch', {
     user: req.session.user,
@@ -448,6 +463,7 @@ async function renderBranchPage(req, res, access, branch, session, error) {
     eligibleForRelease,
     topStepper,
     subStepper,
+    progress,
     coSection,
     runnableDocuments,
     error,
@@ -461,6 +477,44 @@ router.get('/:repoId/branches/:branchId', async (req, res) => {
   const loaded = await loadBranchSession(req, res, access);
   if (!loaded) return;
   await renderBranchPage(req, res, access, loaded.branch, loaded.session, null);
+});
+
+// Read-only JSON twin of the stepper on the page above (see ROADMAP.md Phase
+// 31), polled by public/js/branch-poll.js while a run is in flight.
+//
+// Behind the same loadAccess(req, res, 'read') as the page: a JSON endpoint
+// must not be a cheaper way to read a repo than the page it belongs to, and
+// going through the same loader is what gives it Phase 27's access states for
+// free. Both failure paths it inherits answer in text/plain rather than JSON,
+// which the client treats as "stop polling" on any non-OK response - it never
+// parses the body of a refusal.
+//
+// Nothing here writes, and nothing here is the authority on what the page
+// shows once the run ends: the client's response to a terminal status is one
+// full reload, because completion also brings the build and test logs, the
+// commit SHA, the failure actions and a released pipeline lock, and only a
+// server-side render gets all of those consistent with each other.
+router.get('/:repoId/branches/:branchId/status', async (req, res) => {
+  const access = await loadAccess(req, res, 'read');
+  if (!access) return;
+
+  const loaded = await loadBranchSession(req, res, access);
+  if (!loaded) return;
+  const { branch, session } = loaded;
+
+  const [[lock]] = await db.query('SELECT session_id FROM pipeline_locks WHERE repo_id = ? AND co_number = ?', [
+    access.repo.id,
+    branch.co_number,
+  ]);
+  const lockHeld = !!lock && lock.session_id === session.id;
+
+  const [[requirements], [[latestRun]]] = await Promise.all([
+    db.query('SELECT confirm_status FROM session_requirements WHERE session_id = ? ORDER BY id ASC', [session.id]),
+    db.query('SELECT * FROM pipeline_runs WHERE session_id = ? ORDER BY id DESC LIMIT 1', [session.id]),
+  ]);
+  const { eligibleForApproval } = computeApprovalEligibility(session, lockHeld, requirements);
+
+  res.json(pipelinePolling.buildBranchStatus({ session, latestRun, eligibleForApproval }));
 });
 
 // On-demand document run against this branch (see ROADMAP.md Phase 25). The

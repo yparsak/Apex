@@ -3441,6 +3441,57 @@ the logs and the failure actions appear; a run that stops advancing is called ou
 of being animated over; and a user with JavaScript disabled sees exactly the page they
 see today.
 
+### Implementation notes
+
+Built as planned: one read-only JSON route, one static script
+([branch-poll.js](public/js/branch-poll.js)), one indicator, no schema change.
+`pipelineStepper.js` is untouched and serves both renders, as the plan requires. Seven
+details the plan did not settle:
+
+- **The shared number needed a home, so there is a new module.**
+  [pipelinePolling.js](app/lib/pipelinePolling.js) owns `POLL_INTERVAL_MS`, the two stall
+  thresholds and `buildBranchStatus` — the whole view-model, built by the same call in
+  `renderBranchPage` and in the status route. `worker.js` now imports the constant from
+  there rather than reading the environment itself, which is what makes "the browser's
+  interval *is* the worker's tick" true rather than a coincidence of two `|| 5000`
+  defaults.
+- **`eligibleForApproval` had to be extracted before the endpoint could reuse the
+  stepper.** `buildTopStepper` takes it, and it was computed inline in `renderBranchPage`.
+  It is now `computeApprovalEligibility(session, lockHeld, requirements)`
+  ([repos.js](app/routes/repos.js):387), called by both — otherwise the endpoint would
+  have had a second derivation of exactly the thing the plan says must not drift.
+- **`awaiting_approval` is terminal to the poller, and that is deliberate.** A new
+  requirement finalized after approval drops the session back out of `queued`
+  (`clarificationService.js`), which is not "finished" but *is* a page whose forms,
+  controls and lock line all differ from the one on screen. `terminal` is defined as "not
+  `queued` and not `running`", so that case gets the same single full reload as success
+  and failure.
+- **The indicator renders OFF and the script turns it on.** The plan's "it must change
+  when polling stops" is only half the problem: a server-rendered "watching" badge is a
+  lie on a page whose JavaScript never ran. So the view emits
+  `poll-idle` / "Live updates are off — refresh this page to see progress", and the first
+  thing the script does is flip it to `poll-active`. The no-JS user is told the truth by
+  the same element that tells the JS user the truth.
+- **Two stall thresholds, measured against two different timestamps.** Queued is five
+  minutes against `sessions.approved_at` — generous because `worker.js` processes
+  sessions strictly one at a time, so waiting behind another repo's run is healthy and
+  indistinguishable from a dead worker. Running is twenty minutes against
+  `pipeline_runs.updated_at`, which `setStage` touches as each step begins: the question
+  is "has this *step* moved", not "is this run slow", or a legitimately long codegen on a
+  big change would be called out every time.
+- **The `hidden` attribute needed a global CSS guard.** The poller shows and hides the
+  sub-stepper with `el.hidden`, and `.stepper { display: flex }` beats the browser's own
+  `display: none` for `[hidden]`. One `[hidden] { display: none !important }` rule at the
+  top of the stylesheet ([style.css](public/css/style.css):10), not a per-element
+  workaround — this will bite every later enhancement otherwise.
+- **A 200 that is not JSON is a permanent stop, not a retry.** An expired login or a
+  session this user no longer holds on the branch redirects, `fetch` follows it, and the
+  poller gets an HTML page with a 200. Without a content-type check that fails `res.json()`
+  three times and then reports a network problem, which is the wrong thing to tell the
+  user: it says "you may have been signed out — refresh" instead. The hidden-tab pause is
+  likewise the *only* resumable stop, tracked by its own flag rather than by the
+  indicator's state class, so a resume can never restart polling on a finished run.
+
 ### Also on this page, not in this phase
 
 Found alongside the above and worth their own small phase rather than being folded into
