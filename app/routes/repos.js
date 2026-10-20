@@ -13,6 +13,7 @@ const pipelinePolling = require('../lib/pipelinePolling');
 const documentsService = require('../lib/documents/documentsService');
 const docDefinitions = require('../lib/documents/docDefinitions');
 const docRunService = require('../lib/documents/docRunService');
+const modelCatalog = require('../lib/model/modelCatalog');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -445,7 +446,17 @@ async function renderBranchPage(req, res, access, branch, session, error) {
   // paint and every poll after it are produced by one code path.
   const progress = pipelinePolling.buildBranchStatus({ session, latestRun, eligibleForApproval });
 
+  // Phase 32: AI messages are labelled with the display name of the model
+  // stamped on the session. The stamp is not a foreign key, so a deleted model
+  // falls back to its raw id and an unstamped session to "Apex" - never blank.
+  let aiLabel = 'Apex';
+  if (session.model) {
+    const modelRow = await modelCatalog.getByModelId(session.model);
+    aiLabel = (modelRow && modelRow.display_name) || session.model;
+  }
+
   res.render('branch', {
+    aiLabel,
     user: req.session.user,
     repo: access.repo,
     org: access.org,

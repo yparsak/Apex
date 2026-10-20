@@ -2,28 +2,15 @@
   <aside class="sidebar">
     <%- include('partials/branch-sidebar', { repo: repo, branches: branches }) %>
   </aside>
-  <main class="content">
-    <p><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
-    <h1><%= branch.branch_name %></h1>
-    <p>CO <%= branch.co_number %></p>
-    <%# Phase 27. Everything below that *starts* something is hidden under
-        read_only/disabled: the clarification form, Approve & Implement, the
-        overlap resolution buttons and the failure-recovery actions. The
-        conversation, requirements, stepper and logs all stay - the page is
-        still the record of what happened here, which is the point of never
-        hiding a repo. %>
-    <%- include('partials/repo-state-banner', { repo: repo }) %>
-
-    <%# Phase 31: data-top-stepper / data-sub-stepper are the poller's write
-        targets (public/js/branch-poll.js). Both are fully rendered
-        server-side; the script only ever replaces their <li>s, so with
-        JavaScript off this is exactly the page it has always been. %>
-    <ol class="stepper" data-top-stepper>
-      <% topStepper.forEach(function(s) { %>
-        <li class="step step-<%= s.state %>"><%= s.label %></li>
-      <% }) %>
-    </ol>
-
+  <main class="content branch-content">
+    <%# Phase 32: header, notices, tabs, panel, footer. Left and right
+        columns are untouched. Tabs are anchors + CSS :target so both panels
+        are reachable without JavaScript; branch-tabs.js only adds the
+        hash fallback and conversation auto-scroll. %>
+    <header class="branch-header">
+      <p class="branch-repo"><a href="/repos/<%= repo.id %>"><%= repo.name %></a></p>
+      <h1><%= branch.branch_name %></h1>
+      <p class="branch-co">CO <%= branch.co_number %></p>
     <% if (lockHeld) { %>
       <p class="lock-ok">You hold the pipeline lock for this CO on this repo.</p>
       <%# Phase 29. The abandon verb, and not the same thing as "Clear & start
@@ -41,105 +28,40 @@
     <% } else { %>
       <p class="lock-warn">This CO is currently locked by another in-progress session on this repo — a new AI run can't start until that finishes.</p>
     <% } %>
+    </header>
+
+    <%# Phase 27. Everything that *starts* something is hidden under
+        read_only/disabled; the banner stays outside both tabs on purpose. %>
+    <%- include('partials/repo-state-banner', { repo: repo }) %>
     <% if (error) { %><p class="error"><%= error %></p><% } %>
 
-    <% if (requirements.length) { %>
-      <h2>Requirements</h2>
-      <ul class="requirement-list">
-        <% requirements.forEach(function(r) { %>
-          <li class="requirement-item requirement-<%= r.confirm_status %>">
-            <span class="requirement-status"><%= r.confirm_status.replace('_', ' ') %></span>
-            <span class="requirement-text"><%= r.requirement_text %></span>
-          </li>
-        <% }) %>
-      </ul>
-    <% } %>
-
-    <% if (pendingRequirement) { %>
-      <div class="overlap-banner">
-        <p>
-          <strong>Possible overlap detected.</strong> This requirement may already be
-          implemented on this branch<% if (overlapRequirement) { %>, matching a previously
-          confirmed requirement:<% } else { %>.<% } %>
-        </p>
-        <p class="requirement-text"><%= pendingRequirement.requirement_text %></p>
-        <% if (overlapRequirement) { %>
-          <p class="placeholder">Matches: "<%= overlapRequirement.requirement_text %>"</p>
+    <% var branchTabs = [
+         { key: 'code', label: 'Code', enabled: true },
+         { key: 'report', label: 'Report', enabled: runnableDocuments.length > 0,
+           reason: 'No document is available to run on this repo; ask an administrator.' }
+       ]; %>
+    <nav class="tab-bar" data-tab-bar>
+      <% branchTabs.forEach(function(t) { %>
+        <% if (t.enabled) { %>
+          <a class="tab" href="#<%= t.key %>" data-tab="<%= t.key %>"><%= t.label %></a>
+        <% } else { %>
+          <span class="tab tab-disabled" aria-disabled="true" title="<%= t.reason %>" data-tab="<%= t.key %>"><%= t.label %>
+            <span class="tab-reason"><%= t.reason %></span></span>
         <% } %>
-        <% if (repo.access_state === 'enabled') { %>
-          <div class="overlap-actions">
-            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/confirm" class="inline-form">
-              <button type="submit">Confirm &amp; proceed anyway</button>
-            </form>
-            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/skip" class="inline-form">
-              <button type="submit" class="danger-button">Skip — already done</button>
-            </form>
-          </div>
-        <% } %>
-      </div>
-    <% } %>
-
-    <h2>Clarification</h2>
-    <div class="conversation">
-      <% if (!conversation.length) { %>
-        <p class="placeholder">Describe what you need built for this CO to start the clarification loop.</p>
-      <% } %>
-      <% conversation.forEach(function(m) { %>
-        <div class="message message-<%= m.role %>">
-          <div class="message-role"><%= m.role === 'user' ? user.username : 'Apex' %></div>
-          <div class="message-text"><%= m.content %></div>
-        </div>
       <% }) %>
-    </div>
+    </nav>
 
-    <%# Under read_only/disabled there is no form and no second explanation
-        either - the banner at the top of the page is the explanation, and the
-        note with it is the admin's. %>
-    <% if (repo.access_state === 'enabled' && (session.status === 'awaiting_approval' || session.status === 'queued')) { %>
-      <% if (!pendingRequirement) { %>
-        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form">
-          <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
-            <textarea name="text" rows="4" required></textarea>
-          </label>
-          <button type="submit">Send</button>
-        </form>
-      <% } else { %>
-        <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
-      <% } %>
-    <% } %>
-
-    <% if (eligibleForApproval && repo.access_state === 'enabled') { %>
-      <h2>Approve &amp; Implement</h2>
-      <p class="placeholder">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
-      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/approve">
-        <button type="submit">Approve &amp; Implement</button>
-      </form>
-    <% } %>
-
-    <%# On-demand document runs (see ROADMAP.md Phase 25). Absent entirely -
-        not disabled and greyed - when the repo has the feature off or no
-        document is active, because a control a user can see but never use
-        invites a support ticket the admin has already answered by turning it
-        off. runnableDocuments is empty in both cases. %>
-    <% if (runnableDocuments.length) { %>
-      <h2>Run a document against this branch</h2>
-      <p class="placeholder">
-        Runs one of the documents an administrator has defined against this branch's code,
-        including everything it changes compared to <%= repo.default_branch_name %> — before the merge,
-        rather than the night after. Takes about a minute, and the report is shown once:
-        it is not saved, and it does not affect the repo's nightly documents.
-      </p>
-      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/document-run" class="stacked-form">
-        <label>Document
-          <select name="doc_key" required>
-            <% runnableDocuments.forEach(function(d) { %>
-              <option value="<%= d.doc_key %>"><%= d.title %></option>
-            <% }) %>
-          </select>
-        </label>
-        <button type="submit">Run against this branch</button>
-      </form>
-    <% } %>
+    <div class="tab-panels" data-tab-panels>
+    <section class="tab-panel tab-panel-code" id="code">
+    <%# Phase 31: data-top-stepper / data-sub-stepper are the poller's write
+        targets (public/js/branch-poll.js). Both are fully rendered
+        server-side; the script only ever replaces their <li>s, so with
+        JavaScript off this is exactly the page it has always been. %>
+    <ol class="stepper flags" data-top-stepper>
+      <% topStepper.forEach(function(s) { %>
+        <li class="step step-<%= s.state %>"><%= s.label %></li>
+      <% }) %>
+    </ol>
 
     <% if (session.status !== 'awaiting_approval') { %>
       <h2>Pipeline</h2>
@@ -206,6 +128,102 @@
       <% } %>
     <% } %>
 
+
+      <div class="conversation" data-conversation>
+    <% if (requirements.length) { %>
+      <h2>Requirements</h2>
+      <ul class="requirement-list">
+        <% requirements.forEach(function(r) { %>
+          <li class="requirement-item requirement-<%= r.confirm_status %>">
+            <span class="requirement-status"><%= r.confirm_status.replace('_', ' ') %></span>
+            <span class="requirement-text"><%= r.requirement_text %></span>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+
+    <% if (pendingRequirement) { %>
+      <div class="overlap-banner">
+        <p>
+          <strong>Possible overlap detected.</strong> This requirement may already be
+          implemented on this branch<% if (overlapRequirement) { %>, matching a previously
+          confirmed requirement:<% } else { %>.<% } %>
+        </p>
+        <p class="requirement-text"><%= pendingRequirement.requirement_text %></p>
+        <% if (overlapRequirement) { %>
+          <p class="placeholder">Matches: "<%= overlapRequirement.requirement_text %>"</p>
+        <% } %>
+        <% if (repo.access_state === 'enabled') { %>
+          <div class="overlap-actions">
+            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/confirm" class="inline-form">
+              <button type="submit">Confirm &amp; proceed anyway</button>
+            </form>
+            <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/requirements/<%= pendingRequirement.id %>/skip" class="inline-form">
+              <button type="submit" class="danger-button">Skip — already done</button>
+            </form>
+          </div>
+        <% } %>
+      </div>
+    <% } %>
+
+        <% conversation.forEach(function(m) { %>
+          <div class="message message-<%= m.role %>">
+            <span class="message-role"><%= m.role === 'user' ? user.username : aiLabel %></span>
+            <span class="message-text"><%= m.content %></span>
+          </div>
+        <% }) %>
+      </div>
+
+      <div class="code-footer">
+    <%# Under read_only/disabled there is no form and no second explanation
+        either - the banner at the top of the page is the explanation, and the
+        note with it is the admin's. %>
+    <% if (repo.access_state === 'enabled' && (session.status === 'awaiting_approval' || session.status === 'queued')) { %>
+      <% if (!pendingRequirement) { %>
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form footer-form">
+          <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
+            <textarea name="text" rows="4" required></textarea>
+          </label>
+          <button type="submit">Send</button>
+        </form>
+      <% } else { %>
+        <p class="placeholder">Resolve the overlap above before continuing the clarification loop.</p>
+      <% } %>
+    <% } %>
+
+    <% if (eligibleForApproval && repo.access_state === 'enabled') { %>
+      <p class="placeholder footer-note">Ready to implement in an isolated sandbox: clone, codegen, build, test, then push to <%= branch.branch_name %>.</p>
+      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/approve" class="approve-form">
+        <button type="submit">Approve &amp; Implement</button>
+      </form>
+    <% } %>
+
+      </div>
+    </section>
+
+    <section class="tab-panel tab-panel-report" id="report">
+    <% if (runnableDocuments.length) { %>
+      <h2>Run a document against this branch</h2>
+      <p class="placeholder">
+        Runs one of the documents an administrator has defined against this branch's code,
+        including everything it changes compared to <%= repo.default_branch_name %> — before the merge,
+        rather than the night after. Takes about a minute, and the report is shown once:
+        it is not saved, and it does not affect the repo's nightly documents.
+      </p>
+      <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/document-run" class="stacked-form">
+        <label>Document
+          <select name="doc_key" required>
+            <% runnableDocuments.forEach(function(d) { %>
+              <option value="<%= d.doc_key %>"><%= d.title %></option>
+            <% }) %>
+          </select>
+        </label>
+        <button type="submit">Run against this branch</button>
+      </form>
+    <% } %>
+    </section>
+    </div>
+
     <%# Phase 31. Loaded only while the rendered page is queued or running -
         a poller has no reason to exist on a completed or failed page, and
         not shipping it there is a stronger stop condition than any check
@@ -217,6 +235,7 @@
         data-status-url="/repos/<%= repo.id %>/branches/<%= branch.id %>/status"
         data-poll-interval="<%= progress.pollIntervalMs %>" defer></script>
     <% } %>
+    <script src="/js/branch-tabs.js" defer></script>
   </main>
   <aside class="requirements-panel">
     <h3>Requirements Log — CO <%= branch.co_number %></h3>

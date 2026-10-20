@@ -402,8 +402,8 @@ body {
 
 .message {
   border-radius: 6px;
-  padding: 0.6rem 0.85rem;
-  margin-bottom: 0.6rem;
+  padding: 0.35rem 0.65rem;
+  margin-bottom: 0.3rem;
   white-space: pre-wrap;
 }
 
@@ -419,7 +419,11 @@ body {
   font-size: 0.75rem;
   font-weight: 600;
   color: #4b5563;
-  margin-bottom: 0.25rem;
+  margin-right: 0.4rem;
+}
+
+.message-role::after {
+  content: ':';
 }
 
 .conversation textarea,
@@ -718,4 +722,149 @@ body {
 .row-danger-cell {
   border-left: 1px solid #e5e7eb;
   padding-left: 1rem !important;
+}
+
+/* Phase 32: branch page = header, tabs, panel, footer. Only <main> changes. */
+.branch-content {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 53px);
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.branch-header p,
+.branch-header h1 {
+  margin: 0 0 0.25rem;
+}
+
+.tab-bar {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid #e5e7eb;
+  margin: 0.75rem 0;
+}
+
+.tab {
+  padding: 0.4rem 1rem;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: #374151;
+  text-decoration: none;
+  position: relative;
+}
+
+.tab-disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.tab-reason {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1;
+  width: 18rem;
+  padding: 0.4rem 0.6rem;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #4b5563;
+}
+
+.tab-disabled:hover .tab-reason,
+.tab-disabled:focus .tab-reason {
+  display: block;
+}
+
+.tab-panels {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-panel {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.tab-panel-code,
+.tab-panel-report { display: flex; }
+.tab-panel-report { display: none; }
+.tab-panel-report:target { display: flex; }
+.tab-panels:has(.tab-panel-report:target) .tab-panel-code { display: none; }
+
+.tab-bar:has(~ .tab-panels .tab-panel-report:target) a[data-tab='report'],
+.tab-bar:not(:has(~ .tab-panels .tab-panel-report:target)) a[data-tab='code'] {
+  border-color: #e5e7eb;
+  background: #fff;
+  font-weight: 600;
+}
+
+.flags {
+  margin-bottom: 0.75rem;
+  max-width: none;
+  flex-wrap: nowrap;
+  gap: 0;
+}
+
+.flags .step {
+  border-radius: 0 999px 999px 0;
+  margin-left: -1px;
+}
+
+.flags .step:first-child {
+  border-radius: 999px 999px 999px 999px;
+  border-top-left-radius: 999px;
+  margin-left: 0;
+}
+
+.tab-panel-code > .conversation {
+  flex: 1;
+  min-height: 12rem;
+  max-width: none;
+  margin-bottom: 0;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.code-footer {
+  flex: none;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e5e7eb;
+  margin-top: 0.75rem;
+  background: #fff;
+}
+
+.code-footer:empty {
+  display: none;
+}
+
+.footer-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.approve-form {
+  margin-top: 0.5rem;
+}
+
+.footer-note {
+  margin: 0.5rem 0 0;
+}
+
+.tab-panel-code {
+  overflow-y: auto;
+}
+
+.code-footer {
+  position: sticky;
+  bottom: 0;
 }
