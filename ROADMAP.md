@@ -3511,6 +3511,190 @@ this one:
   ([repos.js](app/routes/repos.js):485) with no feedback at all — the same "is this
   working?" gap as the pipeline, in a place this phase's poller does not reach.
 
+## Phase 32 — The branch page is a header, two tabs and a footer
+
+[branch.ejs](views/branch.ejs) is one long column. A user arriving to ask a question
+scrolls past the stepper, lock line, requirements list, the conversation, and — once a
+session has run — the pipeline section and its logs, to reach a textbox that moves
+further down every time something is added above it. The Approve button is a separate
+heading below that, and the document runner is below *that*. Nothing is wrong with any of
+these pieces; **the page has grown by appending, and the layout has stopped matching what
+a user is doing at any given moment.** This phase re-arranges the middle column only.
+
+**This is a layout phase, and the rule is that nothing is removed.** Every element,
+route, form action, `data-*` hook and conditional on the page today exists after this
+phase, in a new place. Where a piece of text is dropped it is listed under "Removed"
+below, and that list is the whole list.
+
+**The left and right columns are untouched.** `<aside class="sidebar">` (Active
+branches) and `<aside class="requirements-panel">` (Requirements Log) keep their markup,
+position and behaviour exactly. Only the contents of `<main class="content">` change.
+
+### The middle column, top to bottom
+
+1. **Header block.** Four items, all of which exist today and are only being gathered:
+   - Repository name, as a link to `/repos/:repoId` (today a bare `<p>` at line 6);
+   - Branch name (the `<h1>`);
+   - CO number;
+   - The pipeline-lock state for the CO: the "You hold the pipeline lock" line and, when
+     `eligibleForRelease` and the repo is `enabled`, the **Release pipeline lock** button
+     with its confirm dialog ([Phase 29](#phase-29--the-lock-holder-can-release-their-own-pipeline-lock)),
+     or the "locked by another in-progress session" warning when someone else holds it.
+     Phase 29's visibility rules for the button are unchanged.
+2. **Notices.** The repo-state banner ([Phase 27](#phase-27--repository-access-state-enabled-read_only-disabled))
+   and the page `error` message, between the header and the tabs. They are outside both
+   tabs on purpose: *a read-only banner that disappears when the user switches to
+   Report would tell them the repo is writable when it is not.*
+3. **Tab bar.** `Code` and `Report`. The bar is built from a list rather than two
+   hard-coded elements, because a third tab is already expected and adding one should
+   not mean re-deriving the layout.
+4. **Tab panel**, one of the two below.
+5. **Footer**, Code tab only — see below.
+
+### Tab 1 — Code
+
+Top to bottom:
+
+- **Status flags.** The existing top stepper — *Branch created, Clarifying, Awaiting
+  approval, Queued, Running, Completed* — restyled as a row of flags. These are the
+  labels already in [pipelineStepper.js](app/lib/pipelineStepper.js):6, and **that module
+  is not changed**: the same `buildTopStepper` output feeds the render and the Phase 31
+  status endpoint, and a second derivation of "which step are we on" is exactly what
+  Phase 31 was built to prevent. A failed run is already shown as `failed` on the
+  *Running* flag, and that stays. `data-top-stepper` stays on the container and the
+  poller keeps replacing its `<li>`s, so [branch-poll.js](public/js/branch-poll.js)
+  needs no knowledge of the new layout.
+- **Pipeline section**, above the conversation, and present under the same condition as
+  today (`session.status !== 'awaiting_approval'`): status line, the live-update
+  indicator, elapsed time, stall message, sub-stepper, pushed commit SHA, error, build
+  and test logs, and the failed-run actions (Resume, Retry, Clear). Every `data-*`
+  attribute the poller writes to (`data-pipeline-status`, `data-poll-indicator`,
+  `data-poll-text`, `data-pipeline-elapsed`, `data-pipeline-stall`, `data-sub-stepper`)
+  moves with its element. The `<script>` include for the poller moves with the section
+  and keeps its "loaded only when `progress.live`" condition.
+- **Conversation**, filling the remaining height inside a box with **its own scroll bar**
+  rather than lengthening the page.
+  - **Auto-scroll to the newest message.** The box is scrolled to the bottom when the page
+    renders, which is how new text actually arrives today: Send is a `POST` that
+    redirects back, so a new message *is* a page load. If the user had scrolled up and
+    the box is later given new content without a reload, it follows only if they were
+    already at the bottom — a user reading earlier messages is not yanked away.
+    **This is client-side JavaScript, and it is an enhancement only:** with JavaScript off
+    the box still scrolls with its bar and simply opens at the top, as the page does
+    today. It follows Phase 31's standard that a script improves a page that is already
+    correct.
+  - **Compact spacing.** The gaps in the stream are trimmed to what is needed to tell
+    messages apart: no empty-state padding when the conversation is empty, a small fixed
+    gap between messages, and the role label sitting on the same visual block as its text
+    rather than as a spaced-out line of its own. The point is more messages visible per
+    screen; the exact values are a stylesheet matter ([style.css](public/css/style.css):398)
+    and are judged by eye.
+  - **Speaker labels.** The user's messages keep the user's username. **AI messages are
+    labelled with the model's *Display Name* from the catalog
+    ([Phase 22](#phase-22--multi-model-catalog--app-wide-maintenance-lock)), not the
+    literal "Apex".** The name is looked up from `models.display_name` by the model id
+    stamped on the session (`sessions.model`) — the model that was actually chosen for
+    this session, not whatever is the catalog default today. Because that stamp is a
+    plain VARCHAR and deliberately not a foreign key, the row may have been deleted or
+    renamed since: a deleted model falls back to showing its raw `model_id`, and a
+    session with no stamped model at all falls back to "Apex". A label must never be
+    blank, and it must never silently show a different model than the one that spoke.
+    Messages are not stamped individually, so a session whose model is changed by an
+    administrator mid-way would relabel its earlier messages; the session never changes
+    model after stamping today (Phase 22), so that case does not arise, and per-message
+    stamping is not added here.
+  - The pending-overlap banner (*Possible overlap detected*, with **Confirm & proceed
+    anyway** and **Skip — already done**) and the requirements list are rendered **inside
+    the conversation stream**, in the position they would have been in as messages. The
+    overlap buttons keep their `repo.access_state === 'enabled'` condition and their form
+    actions.
+
+Removed, both from the conversation area and nothing else: the **"Clarification"**
+heading, and the empty-state sentence **"Describe what you need built for this CO to
+start the clarification loop."** The textbox's own label already says
+"What do you need built?" for an empty conversation, so the prompt is not lost — it moves
+to where the user types.
+
+### Footer
+
+A footer pinned to the bottom of the Code tab panel, visible without scrolling the
+conversation, holding:
+
+- the message textbox and **Send** (`POST …/messages`), and
+- **Approve & Implement** (`POST …/approve`).
+
+**The conditions do not change.** Send and its textbox render exactly when they do today:
+repo `enabled`, session `awaiting_approval` or `queued`, and no pending overlap (in which
+case today's "Resolve the overlap above before continuing" sentence takes the textbox's
+place). Approve renders when `eligibleForApproval` and the repo is `enabled`. Under
+`read_only` / `disabled`, and while a run is in flight, neither renders — the footer
+container is still the pinned region, but it is allowed to be empty, and the banner
+(item 2) carries the explanation. *This was chosen over showing disabled controls so that
+Phase 27's "nothing that starts something is offered" rule keeps meaning what it says;
+the cost is a footer that is sometimes absent in practice, and that is accepted.*
+
+Send and Approve are two different POSTs to two different routes. They are not merged
+into one form; Approve remains its own `<form>` so that pressing it cannot submit
+whatever is half-typed in the textbox.
+
+### Tab 2 — Report
+
+The contents of the *Run a document against this branch* section as it stands: the
+explanatory paragraph, the document `<select>`, and **Run against this branch**,
+posting to `POST …/document-run`.
+
+- **Enabled under the same condition as today**, i.e. `runnableDocuments.length > 0`
+  (feature on for the repo *and* at least one active document — [Phase 25](#phase-25--on-demand-document-runs-against-a-branch)).
+  The tab is **visible but disabled** when that is false, not absent. *This reverses
+  Phase 25's "absent entirely, not greyed" for the control, deliberately: a tab bar
+  whose second tab appears and disappears per repo makes the layout itself unstable. In
+  exchange, a disabled tab must say why — a tooltip/inline reason along the lines of
+  "No document is available to run on this repo; ask an administrator" — which
+  answers the support question Phase 25 was trying to avoid.*
+- **The selected tab is kept in the URL hash** (`#report`), so the reload that Phase 31's
+  poller performs on completion, and a plain F5, land on the tab the user was on. A hash
+  naming a disabled or unknown tab falls back to Code.
+- **No behaviour change to the run itself.** The POST still blocks for about a minute and
+  still renders its result on the separate document-run page. Phase 31 recorded that as a
+  known gap, and this phase deliberately does not fix it: it moves a form, it does not
+  redesign it.
+
+### Without JavaScript
+
+The tab bar is built from anchor links to `#code` and `#report`, and the two panels are
+shown or hidden with CSS `:target`, so a user with JavaScript blocked can still reach
+both. With no fragment in the URL the Code panel is the default. This is the same
+standard Phase 31 set: the server-rendered page is complete on its own and any script
+only improves it. A script is limited to the hash fallback for a
+disabled tab and to scrolling the conversation to its newest message.
+
+### Not in this phase
+
+- **No change to the left or right columns**, to any route, or to any permission or
+  access rule.
+- **No change to `pipelineStepper.js`, `pipelinePolling.js` or the status endpoint.**
+- **No new tab beyond Code and Report.** The tab list is structured to take one; nothing
+  is added to it.
+- **Document runs still block the request and still render elsewhere** — see Tab 2.
+- **The small items Phase 31 listed as its own follow-up** (open the failing log
+  expanded, separate Resume/Retry from Clear, message timestamps) are not folded in.
+  Auto-scroll to the newest message, which was on that list, *is* done here. Moving the Pipeline section and the conversation
+  into new containers is the moment they would be easiest to do, which is exactly why
+  they need to be said out loud as *not* being done here.
+
+### Done when
+
+The branch page shows a header with a linked repo name, branch, CO number and lock
+state, then a tab bar with *Code* and *Report*; the Code tab shows the six flags, the
+pipeline section when there is one, and the AI conversation in its own scrolling area
+with the overlap prompt and requirements inside it, scrolled to the newest message, compactly spaced, and with AI messages labelled by the model's display name, and a footer holding the textbox,
+Send and Approve & Implement under exactly the rules they follow today; the Report tab
+runs a document against the branch under exactly the rules it follows today and is
+visibly disabled, with a reason, when it cannot; a reload keeps the user on the tab they
+were on; the Active branches and Requirements Log columns are pixel-for-pixel unchanged;
+the Phase 31 poller still advances the flags and sub-stepper without edits; and a user
+with JavaScript disabled can reach both tabs.
+
 ## Open / future (not scheduled)
 
 Carried forward from notes.md as genuinely undecided/unbuilt, not assigned to a phase:
