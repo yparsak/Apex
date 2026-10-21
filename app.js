@@ -20,8 +20,8 @@ const logger = initProcessLogger('app');
 const app = express();
 
 app.set('view engine', 'ejs');
-app.set('views', __dirname + '/views');
-app.use(express.static(__dirname + '/public'));
+app.set('views', __dirname + '/app/views');
+app.use(express.static(__dirname + '/app/public'));
 app.use(express.urlencoded({ extended: false }));
 
 // Manages its own connection pool, separate from app/lib/db.js's promise pool

@@ -868,3 +868,9 @@ body {
   position: sticky;
   bottom: 0;
 }
+
+.message-pending .message-spinner {
+  width: 1.5rem;
+  height: 1.5rem;
+  vertical-align: middle;
+}

@@ -180,7 +180,8 @@
         note with it is the admin's. %>
     <% if (repo.access_state === 'enabled' && (session.status === 'awaiting_approval' || session.status === 'queued')) { %>
       <% if (!pendingRequirement) { %>
-        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form footer-form">
+        <form method="POST" action="/repos/<%= repo.id %>/branches/<%= branch.id %>/messages" class="stacked-form footer-form"
+          data-message-form data-user-label="<%= user.username %>" data-ai-label="<%= aiLabel %>" data-spinner-src="/images/spinner_light.gif">
           <label><%= conversation.length ? 'Your answer' : 'What do you need built?' %>
             <textarea name="text" rows="4" required></textarea>
           </label>
@@ -236,6 +237,7 @@
         data-poll-interval="<%= progress.pollIntervalMs %>" defer></script>
     <% } %>
     <script src="/js/branch-tabs.js" defer></script>
+    <script src="/js/branch-send.js" defer></script>
   </main>
   <aside class="requirements-panel">
     <h3>Requirements Log — CO <%= branch.co_number %></h3>
